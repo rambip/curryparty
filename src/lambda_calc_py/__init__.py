@@ -24,6 +24,8 @@ class Term:
     def _eta(self) -> "Term":
         return self
 
+    def bump_free_vars(self, cutoff: int = 0) -> "Term": ...
+
     def nodes(
         self,
         next_id: list[int],
@@ -46,7 +48,10 @@ class Lambda(Term):
         return Lambda(result), changed
 
     def replace(self, d: int, v: Term):
-        return Lambda(self.body.replace(d + 1, v))
+        return Lambda(self.body.replace(d + 1, v.bump_free_vars(cutoff=0)))
+
+    def bump_free_vars(self, cutoff: int = 0) -> Term:
+        return Lambda(self.body.bump_free_vars(cutoff + 1))
 
     def _eta(self) -> Term:
         # FIXME: There must be no variable that refers to this lambda.
@@ -87,7 +92,12 @@ class Variable(Term):
         return self, False
 
     def replace(self, d: int, v: Term):
-        return v if self.depth == d else self
+        if self.depth == d:
+            return v
+        elif self.depth > d:
+            return Variable(self.depth - 1)  # Decrement free variables
+        else:
+            return self
 
     def __repr__(self):
         return f"{self.depth}"
@@ -119,6 +129,11 @@ class Variable(Term):
         )
         return [node]
 
+    def bump_free_vars(self, cutoff: int = 0) -> Term:
+        if self.depth >= cutoff:
+            return Variable(self.depth + 1)
+        return self
+
 
 class Application(Term):
     def __init__(self, left: Term, right: Term):
@@ -127,6 +142,11 @@ class Application(Term):
 
     def replace(self, d: int, v: Term):
         return Application(self.left.replace(d, v), self.right.replace(d, v))
+
+    def bump_free_vars(self, cutoff: int = 0) -> Term:
+        return Application(
+            self.left.bump_free_vars(cutoff), self.right.bump_free_vars(cutoff)
+        )
 
     def _beta(self) -> tuple[Term, bool]:
         # If I'm a redex, reduce me
@@ -230,10 +250,18 @@ def compute_x_extents(nodes: List[NodeInfo]) -> tuple[dict[int, int], dict[int, 
                 x_min[node.parent_id] = x_min[node.id]
                 x_max[node.parent_id] = x_max[node.id]
 
-        elif node.type == "lambda" and node.parent_id is not None:
+        elif node.is_right_child:
             if node.parent_id in x_min:
                 x_min[node.parent_id] = min(x_min[node.parent_id], x_min[node.id])
                 x_max[node.parent_id] = max(x_max[node.parent_id], x_max[node.id])
+
+        elif node.parent_id is not None:
+            if node.parent_id in x_min:
+                x_min[node.parent_id] = min(x_min[node.parent_id], x_min[node.id])
+                x_max[node.parent_id] = max(x_max[node.parent_id], x_max[node.id])
+            else:
+                x_min[node.parent_id] = x_min[node.id]
+                x_max[node.parent_id] = x_max[node.id]
 
     return x_min, x_max
 
@@ -251,7 +279,7 @@ def display(term: Term) -> svg.SVG:
             target_y = y[node.parent_id]
             elements.append(
                 svg.Line(
-                    x1=0.5 + x_min[node.id],
+                    x1=0.1 + x_min[node.id],
                     y1=0.5 + y[node.id],
                     x2=0.5 + target_x,
                     y2=0.5 + target_y,
@@ -259,18 +287,19 @@ def display(term: Term) -> svg.SVG:
                     stroke_width=0.05,
                 )
             )
+            s = 0.1
             elements.append(
                 svg.Polygon(
                     points=[
-                        0.5 + target_x,
-                        0.5 + target_y - 0.1,
-                        0.5 + target_x,
-                        0.5 - 0.1 + target_y,
-                        0.5 + target_x,
-                        0.5 + target_y + 0.1,
+                        0.5 + target_x + s,
+                        0.5 + target_y - s,
+                        0.5 + target_x - s,
+                        0.5 + target_y,
+                        0.5 + target_x + s,
+                        0.5 + target_y + s,
                     ],
-                    stroke_width=0.2,
-                    stroke="black",
+                    stroke_width=0,
+                    fill="black",
                     # fill="black",
                 )
             )
@@ -298,9 +327,9 @@ def display(term: Term) -> svg.SVG:
                 elements.append(
                     svg.Line(
                         x1=x_min[node.id] + 0.5,
-                        y1=y[node.id] + 0.5,
+                        y1=y[node.id] + 0.1,
                         x2=x_min[node.id] + 0.5,
-                        y2=y[node.ref] + 0.5,
+                        y2=y[node.ref] + 0.9,
                         stroke_width=0.05,
                         stroke="gray",
                     )
@@ -311,14 +340,16 @@ def display(term: Term) -> svg.SVG:
                     x=x_min[node.id] + 0.1,
                     y=y[node.id] + 0.1,
                     width=1 + x_max[node.id] - x_min[node.id] - 0.2,
-                    height=1,
+                    height=0.8,
                     fill_opacity=0.5,
-                    fill="gray",
+                    stroke="orange",
+                    stroke_width=0.1,
+                    fill="none",
                 )
             )
 
     return svg.SVG(
-        viewBox="-10 0 20 20",  # type: ignore
-        height="100%",  # type: ignore
+        viewBox="-10 0 20 10",  # type: ignore
+        height="400px",  # type: ignore
         elements=elements,
     )
