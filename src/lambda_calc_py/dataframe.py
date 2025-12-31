@@ -7,7 +7,12 @@ import svg
 from polars import Schema, String, UInt32
 
 SCHEMA_NODES = Schema(
-    {"id": UInt32, "ref": UInt32, "depth": UInt32, "src_id": UInt32},
+    {
+        "id": UInt32,
+        "ref": UInt32,
+        "depth": UInt32,
+        "bid": pl.Struct({"major": UInt32, "minor": UInt32}),
+    },
 )
 SCHEMA_CHILDREN = Schema({"id": UInt32, "child": UInt32, "type": String})
 
@@ -54,7 +59,9 @@ class Term:
         if self.nodes["id"].count() == 0:
             self.nodes = self.nodes.select(pl.exclude("id")).with_row_index("id")
 
-        self.children = pl.DataFrame(children, schema=SCHEMA_CHILDREN)
+        self.children = pl.DataFrame(children, schema=SCHEMA_CHILDREN).sort(
+            "id", "child"
+        )
 
         if self.nodes["depth"].count() == 0:
             self.nodes = self.with_depth()
@@ -122,17 +129,16 @@ class Term:
         b_subtree = (
             nodes.filter(pl.col("id") >= b)
             .filter(pl.col("depth").lt(b_depth).cum_sum().eq(0))
-            .select(pl.exclude("src_id"))
+            .select(pl.exclude("bid"))
         )
 
         vars = nodes.filter(pl.col("ref") == lamb).select(
-            subst_id="id", var_depth="depth", replaced=pl.lit(True)
+            subst_id="id", depth="depth", replaced=pl.lit(True)
         )
 
         b_subtree_duplicated = b_subtree.join(
-            vars,
-            how="cross",
-        ).with_columns(depth=pl.col("var_depth") + (pl.col("depth") - b_depth) - 2)
+            vars, how="cross", suffix="_var"
+        ).with_columns(depth=pl.col("depth_var") + (pl.col("depth") - b_depth) - 2)
 
         rest_of_nodes = nodes.join(b_subtree, on="id", how="anti").with_columns(
             deleted=(
@@ -141,54 +147,59 @@ class Term:
                 | pl.col("ref").eq_missing(lamb)
             ).replace(False, None),
         )
-        print(rest_of_nodes)
 
         df2 = pl.concat(
             [b_subtree_duplicated, rest_of_nodes],
             how="diagonal_relaxed",
         ).select(
             deleted="deleted",
-            subst_id=pl.col("subst_id").fill_null(pl.col("id")),
-            subst_ref=pl.col("subst_id").fill_null(pl.col("ref")),
-            src_id="id",
-            src_ref="ref",
+            bid=pl.struct(
+                major=pl.col("subst_id").fill_null(pl.col("id")), minor=pl.col("id")
+            ),
+            bid_ref=pl.struct(
+                major=pl.col("subst_id").fill_null(pl.col("ref")), minor=pl.col("ref")
+            ),
             depth=pl.when(pl.col("deleted").is_null()).then(pl.col("depth")),
         )
         new_ids = (
             df2.filter(pl.col("deleted").is_null())
-            .select(
-                "subst_id",
-                "src_id",
-            )
-            .sort("subst_id", "src_id")
+            .select(pl.col("bid"))
+            .sort("bid")
             .with_row_index("id")
         )
         df_out = (
-            df2.join(new_ids, on=["subst_id", "src_id"], how="left")
+            df2.join(new_ids, on="bid", how="left")
             .join(
                 new_ids.rename({"id": "ref"}),
-                left_on=["subst_ref", "src_ref"],
-                right_on=["subst_id", "src_id"],
+                left_on="bid_ref",
+                right_on="bid",
                 how="left",
             )
-            .select("id", "ref", "depth", "src_id")
+            .select("id", "ref", "depth", "bid")
         ).sort("id")
 
         children2 = (
             self.children.join(b_subtree, left_on="child", right_on="id", how="anti")
             .join(vars, left_on="child", right_on="subst_id", how="left")
-            .with_columns(
-                child=pl.when("replaced")
-                .then(b)
-                .otherwise(pl.col("child").replace(redex, a)),
-                subst_child=pl.col("child").replace(redex, a),
-                subst_id="id",
+            .select(
+                "type",
+                bid=pl.struct(major=pl.col("id"), minor=pl.col("id")),
+                bid_child=pl.struct(
+                    major=pl.col("child").replace(redex, a),
+                    minor=pl.when("replaced")
+                    .then(b)
+                    .otherwise(pl.col("child").replace(redex, a)),
+                ),
             )
         )
         children_duplicated = (
             self.children.join(b_subtree, left_on="child", right_on="id")
             .join(vars, how="cross")
-            .with_columns(subst_child="subst_id")
+            .select(
+                "type",
+                bid=pl.struct(major="subst_id", minor="id"),
+                bid_child=pl.struct(major="subst_id", minor="child"),
+            )
         )
         children_out = (
             pl.concat(
@@ -198,15 +209,14 @@ class Term:
                 ],
                 how="diagonal_relaxed",
             )
-            .rename({"id": "src_id", "child": "src_child"})
-            .join(new_ids, on=["src_id", "subst_id"])
+            .join(new_ids, on="bid")
             .join(
                 new_ids.rename({"id": "child"}),
-                left_on=["src_child", "subst_child"],
-                right_on=["src_id", "subst_id"],
+                left_on="bid_child",
+                right_on="bid",
             )
             .select("id", "child", "type")
-        ).sort(["id", "child"])
+        )
         return Term(df_out, children_out), True
 
     def compute_arity(self):
@@ -295,7 +305,7 @@ class Term:
             self.children, left_on="id", right_on="child", suffix="_parent", how="left"
         ).iter_rows(named=True):
             id = row["id"]
-            src_id = row["src_id"]
+            src_id = row["bid"]["minor"] if row["bid"] else None
             if id is None:
                 trajectories[id] = [bboxes[src_id], bboxes[src_id]]
 
@@ -311,7 +321,7 @@ class Term:
             connection = row["type"]
             parent = row["id_parent"]
             ref = row["ref"]
-            src_id = row["src_id"]
+            src_id = row["bid"]["minor"] if row["bid"] else None
 
             if target_id is None and last is not None:
                 traj = [bboxes[src_id], bboxes[src_id]]
