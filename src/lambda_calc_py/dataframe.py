@@ -140,42 +140,46 @@ class Term:
             vars, how="cross", suffix="_var"
         ).with_columns(depth=pl.col("depth_var") + (pl.col("depth") - b_depth) - 2)
 
-        rest_of_nodes = nodes.join(b_subtree, on="id", how="anti").with_columns(
-            deleted=(
-                pl.col("id").eq(redex)
-                | pl.col("id").eq(lamb)
-                | pl.col("ref").eq_missing(lamb)
-            ).replace(False, None),
-        )
+        rest_of_nodes = nodes.join(b_subtree, on="id", how="anti").with_columns()
 
-        df2 = pl.concat(
-            [b_subtree_duplicated, rest_of_nodes],
-            how="diagonal_relaxed",
-        ).select(
-            deleted="deleted",
-            bid=pl.struct(
-                major=pl.col("subst_id").fill_null(pl.col("id")), minor=pl.col("id")
-            ),
-            bid_ref=pl.struct(
-                major=pl.col("subst_id").fill_null(pl.col("ref")), minor=pl.col("ref")
-            ),
-            depth=pl.when(pl.col("deleted").is_null()).then(pl.col("depth")),
-        )
-        new_ids = (
-            df2.filter(pl.col("deleted").is_null())
-            .select(pl.col("bid"))
+        new_nodes = (
+            pl.concat(
+                [b_subtree_duplicated, rest_of_nodes],
+                how="diagonal_relaxed",
+            )
+            .join(
+                vars,
+                left_on="id",
+                right_on="subst_id",
+                how="anti",
+            )
+            .filter(
+                pl.col("id").ne(redex),
+                pl.col("id").ne(lamb),
+            )
+            .select(
+                bid=pl.struct(
+                    major=pl.col("subst_id").fill_null(pl.col("id")), minor=pl.col("id")
+                ),
+                bid_ref=pl.struct(
+                    major=pl.col("subst_id").fill_null(pl.col("ref")),
+                    minor=pl.col("ref"),
+                ),
+                depth="depth",
+            )
             .sort("bid")
             .with_row_index("id")
         )
+
+        new_ids = new_nodes.select("id", "bid")
+
         df_out = (
-            df2.join(new_ids, on="bid", how="left")
-            .join(
+            new_nodes.join(
                 new_ids.rename({"id": "ref"}),
                 left_on="bid_ref",
                 right_on="bid",
                 how="left",
-            )
-            .select("id", "ref", "depth", "bid")
+            ).select("id", "ref", "depth", "bid")
         ).sort("id")
 
         children2 = (
