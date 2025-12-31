@@ -71,8 +71,8 @@ class Term:
 
         candidates = (
             self.nodes.join(applications, on="id")
-            .join(lambdas, left_on="left", right_on="id")
-            .select("id", "left", "right", "depth")
+            .join(lambdas, left_on="left", right_on="id", suffix="_left")
+            .select("id", "left", "right", "down_left", "depth")
         )
 
         return candidates.row(0) if len(candidates) > 0 else None
@@ -82,18 +82,18 @@ class Term:
         candidate = self.find_redex()
         if candidate is None:
             return self, False
-        redex, lamb, b, redex_depth = candidate
+        redex, lamb, b, a, redex_depth = candidate
         b_depth = redex_depth + 1
 
-        b_subtree = self.nodes.filter(pl.col("id") >= b).filter(
-            pl.col("depth").lt(b_depth).cum_sum().eq(0)
+        b_subtree = (
+            self.nodes.filter(pl.col("id") >= b)
+            .filter(pl.col("depth").lt(b_depth).cum_sum().eq(0))
+            .select(pl.exclude("src_id"))
         )
 
         b_subtree_duplicated = (
-            b_subtree.select(
-                pl.col("id"),
+            b_subtree.with_columns(
                 special=pl.col("id").eq(b).or_(None),
-                src_depth=pl.col("depth"),
             )
             .join(
                 self.nodes.filter(pl.col("ref") == lamb).select(
@@ -101,14 +101,13 @@ class Term:
                 ),
                 how="cross",
             )
-            .with_columns(
-                new_depth=pl.col("var_depth") + (pl.col("src_depth") - b_depth)
-            )
+            .with_columns(depth=pl.col("var_depth") + (pl.col("depth") - b_depth) - 2)
         )
 
         df2 = (
-            self.nodes.join(
-                b_subtree_duplicated, left_on="id", right_on="id", how="left"
+            pl.concat(
+                [b_subtree_duplicated, self.nodes.join(b_subtree, on="id", how="anti")],
+                how="diagonal_relaxed",
             )
             .with_columns(
                 deleted=(
@@ -123,15 +122,7 @@ class Term:
                 src_ref="ref",
                 special="special",
                 deleted="deleted",
-                depth=pl.when(pl.col("deleted"))
-                .then(None)
-                .otherwise(
-                    pl.coalesce(
-                        pl.col("new_depth"),  # Use new depth for duplicated nodes
-                        pl.col("depth"),  # Keep original depth for all other nodes
-                    )
-                    - 2
-                ),
+                depth=pl.when(pl.col("deleted")).then(None).otherwise(pl.col("depth")),
             )
         )
         new_ids = (
@@ -146,7 +137,8 @@ class Term:
                     pl.col("subst_id")
                 ),
             )
-            .sort(["subst_id", "src_id"])
+            # FIXME: join with subst_id.fill_null(src_id) to avoid the null_equals=True
+            .sort([pl.col("subst_id").fill_null(pl.col("src_id")), "src_id"])
             .with_row_index("id")
         )
         df_out = (
@@ -164,6 +156,7 @@ class Term:
             self.children.join(
                 b_subtree_duplicated, left_on="child", right_on="id", how="left"
             )
+            .with_columns(pl.col("child").replace(redex, a))
             .rename({"id": "src_id", "child": "src_child"})
             .join(new_ids, on=["src_id", "subst_id"], nulls_equal=True)
             .join(
@@ -176,15 +169,38 @@ class Term:
         ).sort(["id", "child"])
         return Term(df_out, children_out), True
 
-    def arities(self):
+    def compute_arity(self):
         return dict(self.children.group_by("id").len().iter_rows())
+
+    def summary(self):
+        try:
+            x_min, x_max = self.compute_x_bounds()
+            x_min_expr = pl.col("id").replace_strict(x_min, default=None)
+            x_max_expr = pl.col("id").replace_strict(x_max, default=None)
+        except (KeyError, AssertionError):
+            x_min_expr = None
+            x_max_expr = None
+        try:
+            y = self.compute_y_position()
+            y_expr = pl.col("id").replace_strict(y, default=None)
+        except KeyError:
+            y_expr = None
+        arity = self.compute_arity()
+        return self.nodes.join(
+            self.children, left_on="id", right_on="child", suffix="_parent", how="left"
+        ).with_columns(
+            y=y_expr,
+            x_min=x_min_expr,
+            x_max=x_max_expr,
+            arity=pl.col("id").replace_strict(arity, default=0),
+        )
 
     def compute_y_position(self):
         """
         TODO: bounds of children
         """
         y = {0: 0}
-        arities = self.arities()
+        arities = self.compute_arity()
 
         for row in self.children.sort("id").iter_rows(named=True):
             parent = row["id"]
@@ -206,7 +222,7 @@ class Term:
         x_min = {}
         x_max = {}
         next_var = 0
-        arities = self.arities()
+        arities = self.compute_arity()
         for row in (
             self.children.join(self.nodes, left_on="child", right_on="id")
             .sort(["child", "id"], descending=True)
@@ -249,20 +265,67 @@ class Term:
                     x_max[parent] = x_max[child]
         return x_min, x_max
 
+    def position(
+        self,
+        node_id,
+        arity,
+        time,
+        y_last,
+        x_min_last,
+        x_max_last,
+        y_now,
+        x_min_now,
+        x_max_now,
+        src_id,
+    ):
+        """Returns bounding box [[x_min, x_max], [y_min, y_max]] for a node at given time (0 or 1)"""
+        if src_id is None and node_id is None:
+            raise ValueError("unkown node")
+
+        ENABLED = False
+        try:
+            if ENABLED and time == 0 and src_id is not None:
+                y = y_last[src_id]
+                x1 = x_min_last[src_id]
+                x2 = x_max_last[src_id]
+            else:
+                y = y_now[node_id]
+                x1 = x_min_now[node_id]
+                x2 = x_max_now[node_id]
+        except KeyError:
+            y = 0
+            x1 = 0
+            x2 = 0
+
+        if arity == 1:  # Lambda
+            return [
+                [x1, x2],
+                [y, y + 1],
+            ]
+        elif arity == 0:  # Variable
+            return [
+                [x1, x1 + 1],
+                [y, y + 1],
+            ]
+        else:  # Application (arity == 2)
+            return [
+                [x1, x2],
+                [y, y + 1],
+            ]
+
     def _svg_blocks(self, last: Optional["Term"]) -> Iterable[svg.Element]:
         y_now = self.compute_y_position()
         x_min_now, x_max_now = self.compute_x_bounds()
+
         if last is None:
             y_last = y_now
             x_min_last, x_max_last = x_min_now, x_max_now
         else:
             y_last = last.compute_y_position()
             x_min_last, x_max_last = last.compute_x_bounds()
-        y = [y_last, y_now]
-        x_min = [x_min_last, x_min_now]
-        x_max = [x_max_last, x_max_now]
 
-        arities = self.arities()
+        arities = self.compute_arity()
+
         for row in self.nodes.join(
             self.children, left_on="id", right_on="child", suffix="_parent", how="left"
         ).iter_rows(named=True):
@@ -271,86 +334,88 @@ class Term:
             parent = row["id_parent"]
             ref = row["ref"]
             src_id = row["src_id"]
+
             if target_id is None:
-                # freshly deleted node
                 continue
+
+            arity = arities.get(target_id, 0)
+
             if connection == "right":
                 assert parent is not None
                 yield svg_left_arrow(
-                    x_min[target_id], x_max[parent], y[target_id], y[parent]
+                    x_min_now[target_id],
+                    x_max_now[parent],
+                    y_now[target_id],
+                    y_now[parent],
                 )
-            if arities.get(target_id, 0) == 1:
-                yield (
-                    svg.Rect(
-                        height=0.8,
-                        fill="blue",
-                        elements=[
-                            animate(
-                                "x", lambda i: 0.1 + x_min[i][[src_id, target_id][i]]
-                            ),
-                            animate("y", lambda i: 0.1 + y[i][[src_id, target_id][i]]),
-                            animate(
-                                "width",
-                                lambda i: 0.8
-                                + x_max[i][[src_id, target_id][i]]
-                                - x_min[i][[src_id, target_id][i]],
-                            ),
-                        ],
-                    )
+
+            bboxes = [
+                self.position(
+                    target_id,
+                    arity,
+                    0,
+                    y_last,
+                    x_min_last,
+                    x_max_last,
+                    y_now,
+                    x_min_now,
+                    x_max_now,
+                    src_id,
+                ),
+                self.position(
+                    target_id,
+                    arity,
+                    1,
+                    y_last,
+                    x_min_last,
+                    x_max_last,
+                    y_now,
+                    x_min_now,
+                    x_max_now,
+                    src_id,
+                ),
+            ]
+
+            if arity == 1:  # Lambda
+                yield svg.Rect(
+                    height=0.8,
+                    fill="blue",
+                    elements=[
+                        animate_bbox("x", bboxes),
+                        animate_bbox("y", bboxes),
+                        animate_bbox("width", bboxes),
+                    ],
                 )
-            elif arities.get(target_id, 0) == 0:
+            elif arity == 0:  # Variable
                 yield svg.Rect(
                     width=0.8,
                     height=0.8,
                     fill="red",
                     elements=[
-                        animate("x", lambda i: 0.1 + x_min[i][[src_id, target_id][i]]),
-                        animate("y", lambda i: 0.1 + y[i][[src_id, target_id][i]]),
+                        animate_bbox("x", bboxes),
+                        animate_bbox("y", bboxes),
                     ],
                 )
-                yield (
-                    svg.Line(
-                        x1=x_min[target_id] + 0.5,
-                        y1=y[target_id] + 0.1,
-                        x2=x_min[target_id] + 0.5,
-                        y2=y[ref] + 0.9,
-                        stroke_width=0.05,
-                        stroke="gray",
-                        elements=[
-                            animate(
-                                "x1", lambda i: 0.5 + x_min[i][[src_id, target_id][i]]
-                            ),
-                            animate("y1", lambda i: 0.1 + y[i][[src_id, target_id][i]]),
-                            animate(
-                                "x2", lambda i: 0.5 + x_min[i][[src_id, target_id][i]]
-                            ),
-                            # fixme: old and new ref
-                            animate("y2", lambda i: 0.9 + y[i][ref]),
-                        ],
-                    )
+                yield svg.Line(
+                    x1=x_min_now[target_id] + 0.5,
+                    y1=y_now[target_id] + 0.1,
+                    x2=x_min_now[target_id] + 0.5,
+                    y2=y_now[ref] + 0.9,
+                    stroke_width=0.05,
+                    stroke="gray",
                 )
-            elif arities.get(target_id, 0) == 2:
-                yield (
-                    svg.Rect(
-                        height=0.8,
-                        fill_opacity=0.5,
-                        stroke="orange",
-                        stroke_width=0.1,
-                        fill="none",
-                        elements=[
-                            animate(
-                                "x",
-                                lambda i: 0.1 + x_min[i][[src_id, target_id][i]],
-                            ),
-                            animate("y", lambda i: 0.1 + y[i][[src_id, target_id][i]]),
-                            animate(
-                                "width",
-                                lambda i: 0.8
-                                + x_max[i][[src_id, target_id][i]]
-                                - x_min[i][[src_id, target_id][i]],
-                            ),
-                        ],
-                    )
+            elif arity == 2:  # Application
+                yield svg.Rect(
+                    height=0.8,
+                    fill_opacity=0.5,
+                    stroke="orange",
+                    stroke_width=0.1,
+                    fill="none",
+                    elements=[
+                        animate_bbox("x", bboxes),
+                        animate_bbox("y", bboxes),
+                        animate_bbox("width", bboxes),
+                    ],
                 )
 
     def display(self, last: Optional["Term"] = None):
@@ -360,6 +425,29 @@ class Term:
             height="400px",  # type: ignore
             elements=list(self._svg_blocks(last)),
         )
+
+
+def animate_bbox(name: str, bboxes: list, duration: int = 2) -> svg.Element:
+    """Create animation for a bounding box attribute (x, y, width, or height)"""
+    bbox0, bbox1 = bboxes
+
+    if name == "x":
+        values = f"{0.1 + bbox0[0][0]};{0.1 + bbox1[0][0]}"
+    elif name == "y":
+        values = f"{0.1 + bbox0[1][0]};{0.1 + bbox1[1][0]}"
+    elif name == "width":
+        values = f"{0.8 + bbox0[0][1] - bbox0[0][0]};{0.8 + bbox1[0][1] - bbox1[0][0]}"
+    elif name == "height":
+        values = f"{0.8 + bbox0[1][1] - bbox0[1][0]};{0.8 + bbox1[1][1] - bbox1[1][0]}"
+    else:
+        raise ValueError(f"Unknown attribute: {name}")
+
+    return svg.Animate(
+        attributeName=name,
+        values=values,
+        dur=timedelta(seconds=duration),
+        repeatCount="indefinite",
+    )
 
 
 def animate(name: str, f: Callable[[int], float], duration: int = 2) -> svg.Element:
