@@ -1,5 +1,6 @@
+from dataclasses import dataclass
 from datetime import timedelta
-from typing import Callable, Iterable, Optional
+from typing import Callable, Iterable, Literal, Optional
 
 import polars as pl
 import svg
@@ -9,6 +10,42 @@ SCHEMA_NODES = Schema(
     {"id": UInt32, "ref": UInt32, "depth": UInt32, "src_id": UInt32},
 )
 SCHEMA_CHILDREN = Schema({"id": UInt32, "child": UInt32, "type": String})
+
+
+@dataclass
+class BBox:
+    x: Optional[tuple[int, int]]
+    y: Optional[tuple[int, int]]
+
+    def __or__(self: "BBox", other: "BBox") -> "BBox":
+        def merge(a, b):
+            if a is None:
+                if b is None:
+                    return None
+                else:
+                    return b
+            else:
+                if b is None:
+                    return a
+                else:
+                    return (min(a[0], b[0]), max(a[1], b[1]))
+
+        return BBox(merge(self.x, other.x), merge(self.y, other.y))
+
+    def shift_x(self, offset: int) -> "BBox":
+        if self.x is None:
+            return BBox(self.x, self.y)
+        else:
+            return BBox((self.x[0] + offset, self.x[1] + offset), self.y)
+
+    def shift_y(self, offset: int) -> "BBox":
+        if self.y is None:
+            return BBox(self.x, self.y)
+        else:
+            return BBox(self.x, (self.y[0] + offset, self.y[1] + offset))
+
+    def copy(self):
+        return BBox(self.x, self.y)
 
 
 class Term:
@@ -61,9 +98,6 @@ class Term:
             d[child] = d[parent] + 1
         return self.nodes.with_columns(depth=pl.col("id").replace_strict(d))
 
-    def clear(self):
-        self.nodes = self.nodes.drop_nulls("id")
-
     def find_redex(self):
         pivoted = self.children.pivot("type", index="id")
         applications = pivoted.filter(pl.col("left").is_not_null())
@@ -78,7 +112,7 @@ class Term:
         return candidates.row(0) if len(candidates) > 0 else None
 
     def _beta(self) -> tuple["Term", bool]:
-        self.clear()
+        nodes = self.nodes.drop_nulls("id")
         candidate = self.find_redex()
         if candidate is None:
             return self, False
@@ -86,7 +120,7 @@ class Term:
         b_depth = redex_depth + 1
 
         b_subtree = (
-            self.nodes.filter(pl.col("id") >= b)
+            nodes.filter(pl.col("id") >= b)
             .filter(pl.col("depth").lt(b_depth).cum_sum().eq(0))
             .select(pl.exclude("src_id"))
         )
@@ -96,7 +130,7 @@ class Term:
                 special=pl.col("id").eq(b).or_(None),
             )
             .join(
-                self.nodes.filter(pl.col("ref") == lamb).select(
+                nodes.filter(pl.col("ref") == lamb).select(
                     subst_id="id", var_depth="depth"
                 ),
                 how="cross",
@@ -106,7 +140,7 @@ class Term:
 
         df2 = (
             pl.concat(
-                [b_subtree_duplicated, self.nodes.join(b_subtree, on="id", how="anti")],
+                [b_subtree_duplicated, nodes.join(b_subtree, on="id", how="anti")],
                 how="diagonal_relaxed",
             )
             .with_columns(
@@ -174,55 +208,42 @@ class Term:
 
     def summary(self):
         try:
-            x_min, x_max = self.compute_x_bounds()
-            x_min_expr = pl.col("id").replace_strict(x_min, default=None)
-            x_max_expr = pl.col("id").replace_strict(x_max, default=None)
+            bboxes = self.compute_bboxes()
+            x = {i: b.x for (i, b) in bboxes.items()}
+            y = {i: b.y for (i, b) in bboxes.items()}
+            x_expr = pl.col("id").replace_strict(x)
+            y_expr = pl.col("id").replace_strict(y)
         except (KeyError, AssertionError):
-            x_min_expr = None
-            x_max_expr = None
-        try:
-            y = self.compute_y_position()
-            y_expr = pl.col("id").replace_strict(y, default=None)
-        except KeyError:
+            x_expr = (None,)
             y_expr = None
         arity = self.compute_arity()
         return self.nodes.join(
             self.children, left_on="id", right_on="child", suffix="_parent", how="left"
         ).with_columns(
+            x=x_expr,
             y=y_expr,
-            x_min=x_min_expr,
-            x_max=x_max_expr,
             arity=pl.col("id").replace_strict(arity, default=0),
         )
 
-    def compute_y_position(self):
-        """
-        TODO: bounds of children
-        """
-        y = {0: 0}
+    def compute_bboxes(self) -> dict[int, BBox]:
+        result = {0: BBox(None, (0, 0))}
         arities = self.compute_arity()
-
         for row in self.children.sort("id").iter_rows(named=True):
             parent = row["id"]
             child = row["child"]
             connection = row["type"]
 
             if connection == "right":
-                y[child] = y[parent]
+                result[child] = result[parent].copy()
 
             elif connection == "left" and arities.get(child, 0) != 2:
-                y[child] = y[parent]
+                result[child] = result[parent].copy()
 
             else:
-                y[child] = y[parent] + 1
+                result[child] = result[parent].shift_y(1)
 
-        return y
-
-    def compute_x_bounds(self):
-        x_min = {}
-        x_max = {}
         next_var = 0
-        arities = self.compute_arity()
+
         for row in (
             self.children.join(self.nodes, left_on="child", right_on="id")
             .sort(["child", "id"], descending=True)
@@ -233,98 +254,49 @@ class Term:
             connection = row["type"]
             ref = row["ref"]
             if arities.get(child, 0) == 0:
-                x_min[child] = next_var
-                x_max[child] = next_var
+                assert ref is not None
+                result[child].x = (next_var, next_var)
                 next_var -= 1
 
-                assert ref is not None
-                if ref not in x_min:
-                    x_min[ref] = x_min[child]
-                    x_max[ref] = x_max[child]
-                else:
-                    x_min[ref] = min(x_min[ref], x_min[child])
-                    x_max[ref] = max(x_max[ref], x_max[child])
+                result[ref] = result[child] | result.get(ref, BBox(None, None))
 
             # Update parent
             if connection == "left":
-                if parent not in x_min:
-                    x_min[parent] = x_min[child]
-                    x_max[parent] = x_max[child]
+                if result[parent].x is None:
+                    result[parent].x = result[child].x
 
             elif connection == "right":
-                if parent in x_min:
-                    x_min[parent] = min(x_min[parent], x_min[child])
-                    x_max[parent] = max(x_max[parent], x_max[child])
+                if result[parent].x is not None:
+                    result[parent] = result[child] | result[parent]
 
             else:
-                if parent in x_min:
-                    x_min[parent] = min(x_min[parent], x_min[child])
-                    x_max[parent] = max(x_max[parent], x_max[child])
-                else:
-                    x_min[parent] = x_min[child]
-                    x_max[parent] = x_max[child]
-        return x_min, x_max
-
-    def position(
-        self,
-        node_id,
-        arity,
-        time,
-        y_last,
-        x_min_last,
-        x_max_last,
-        y_now,
-        x_min_now,
-        x_max_now,
-        src_id,
-    ):
-        """Returns bounding box [[x_min, x_max], [y_min, y_max]] for a node at given time (0 or 1)"""
-        if src_id is None and node_id is None:
-            raise ValueError("unkown node")
-
-        ENABLED = False
-        try:
-            if ENABLED and time == 0 and src_id is not None:
-                y = y_last[src_id]
-                x1 = x_min_last[src_id]
-                x2 = x_max_last[src_id]
-            else:
-                y = y_now[node_id]
-                x1 = x_min_now[node_id]
-                x2 = x_max_now[node_id]
-        except KeyError:
-            y = 0
-            x1 = 0
-            x2 = 0
-
-        if arity == 1:  # Lambda
-            return [
-                [x1, x2],
-                [y, y + 1],
-            ]
-        elif arity == 0:  # Variable
-            return [
-                [x1, x1 + 1],
-                [y, y + 1],
-            ]
-        else:  # Application (arity == 2)
-            return [
-                [x1, x2],
-                [y, y + 1],
-            ]
+                result[parent] = result[child] | result[parent]
+        return result
 
     def _svg_blocks(self, last: Optional["Term"]) -> Iterable[svg.Element]:
-        y_now = self.compute_y_position()
-        x_min_now, x_max_now = self.compute_x_bounds()
-
-        if last is None:
-            y_last = y_now
-            x_min_last, x_max_last = x_min_now, x_max_now
+        bboxes = self.compute_bboxes()
+        if last is not None:
+            arities_last = last.compute_arity()
+            last_bboxes = last.compute_bboxes()
         else:
-            y_last = last.compute_y_position()
-            x_min_last, x_max_last = last.compute_x_bounds()
+            arities_last = None
+            last_bboxes = None
 
         arities = self.compute_arity()
+        trajectories = {}
+
+        for row in self.nodes.join(
+            self.children, left_on="id", right_on="child", suffix="_parent", how="left"
+        ).iter_rows(named=True):
+            id = row["id"]
+            src_id = row["src_id"]
+            if id is None:
+                trajectories[id] = [bboxes[src_id], bboxes[src_id]]
+
+            elif last_bboxes is None:
+                trajectories[id] = [bboxes[id], bboxes[id]]
+            else:
+                trajectories[id] = [last_bboxes[src_id], bboxes[id]]
 
         for row in self.nodes.join(
             self.children, left_on="id", right_on="child", suffix="_parent", how="left"
@@ -335,55 +307,34 @@ class Term:
             ref = row["ref"]
             src_id = row["src_id"]
 
-            if target_id is None:
-                continue
-
-            arity = arities.get(target_id, 0)
+            if target_id is None and last is not None:
+                traj = [bboxes[src_id], bboxes[src_id]]
+                arity = arities_last.get(src_id, 0)
+                fade = (1, 0)
+            else:
+                arity = arities.get(target_id, 0)
+                traj = trajectories[target_id]
+                fade = (1, 1)
 
             if connection == "right":
+                traj_parent = trajectories[parent]
                 assert parent is not None
                 yield svg_left_arrow(
-                    x_min_now[target_id],
-                    x_max_now[parent],
-                    y_now[target_id],
-                    y_now[parent],
+                    [t.x[0] for t in traj],
+                    [t.x[1] for t in traj_parent],
+                    [t.y[0] for t in traj],
+                    [t.y[0] for t in traj_parent],
                 )
-
-            bboxes = [
-                self.position(
-                    target_id,
-                    arity,
-                    0,
-                    y_last,
-                    x_min_last,
-                    x_max_last,
-                    y_now,
-                    x_min_now,
-                    x_max_now,
-                    src_id,
-                ),
-                self.position(
-                    target_id,
-                    arity,
-                    1,
-                    y_last,
-                    x_min_last,
-                    x_max_last,
-                    y_now,
-                    x_min_now,
-                    x_max_now,
-                    src_id,
-                ),
-            ]
 
             if arity == 1:  # Lambda
                 yield svg.Rect(
                     height=0.8,
                     fill="blue",
                     elements=[
-                        animate_bbox("x", bboxes),
-                        animate_bbox("y", bboxes),
-                        animate_bbox("width", bboxes),
+                        animate_bbox("x", traj),
+                        animate_bbox("y", traj),
+                        animate_bbox("width", traj),
+                        animate("opacity", fade),
                     ],
                 )
             elif arity == 0:  # Variable
@@ -392,17 +343,27 @@ class Term:
                     height=0.8,
                     fill="red",
                     elements=[
-                        animate_bbox("x", bboxes),
-                        animate_bbox("y", bboxes),
+                        animate_bbox("x", traj),
+                        animate_bbox("y", traj),
+                        animate("opacity", fade),
                     ],
                 )
                 yield svg.Line(
-                    x1=x_min_now[target_id] + 0.5,
-                    y1=y_now[target_id] + 0.1,
-                    x2=x_min_now[target_id] + 0.5,
-                    y2=y_now[ref] + 0.9,
                     stroke_width=0.05,
                     stroke="gray",
+                    elements=[
+                        animate("x1", [traj[0].x[0] + 0.5, traj[1].x[0] + 0.5]),
+                        animate("y1", [traj[0].y[0] + 0.1, traj[1].y[0] + 0.1]),
+                        animate("x2", [traj[0].x[0] + 0.5, traj[1].x[0] + 0.5]),
+                        animate(
+                            "y2",
+                            [
+                                trajectories[ref][0].y[0] + 0.9,
+                                trajectories[ref][1].y[0] + 0.9,
+                            ],
+                        ),
+                        animate("opacity", fade),
+                    ],
                 )
             elif arity == 2:  # Application
                 yield svg.Rect(
@@ -412,9 +373,10 @@ class Term:
                     stroke_width=0.1,
                     fill="none",
                     elements=[
-                        animate_bbox("x", bboxes),
-                        animate_bbox("y", bboxes),
-                        animate_bbox("width", bboxes),
+                        animate_bbox("x", traj),
+                        animate_bbox("y", traj),
+                        animate_bbox("width", traj),
+                        animate("opacity", fade),
                     ],
                 )
 
@@ -427,18 +389,18 @@ class Term:
         )
 
 
-def animate_bbox(name: str, bboxes: list, duration: int = 2) -> svg.Element:
+def animate_bbox(name: str, bboxes: list, duration: int = 2, pad=0.1) -> svg.Element:
     """Create animation for a bounding box attribute (x, y, width, or height)"""
     bbox0, bbox1 = bboxes
 
     if name == "x":
-        values = f"{0.1 + bbox0[0][0]};{0.1 + bbox1[0][0]}"
+        values = f"{pad + bbox0.x[0]};{pad + bbox1.x[0]}"
     elif name == "y":
-        values = f"{0.1 + bbox0[1][0]};{0.1 + bbox1[1][0]}"
+        values = f"{pad + bbox0.y[0]};{pad + bbox1.y[0]}"
     elif name == "width":
-        values = f"{0.8 + bbox0[0][1] - bbox0[0][0]};{0.8 + bbox1[0][1] - bbox1[0][0]}"
+        values = f"{1 - 2 * pad + bbox0.x[1] - bbox0.x[0]};{1 - 2 * pad + bbox1.x[1] - bbox1.x[0]}"
     elif name == "height":
-        values = f"{0.8 + bbox0[1][1] - bbox0[1][0]};{0.8 + bbox1[1][1] - bbox1[1][0]}"
+        values = f"{1 - 2 * pad + bbox0.y[1] - bbox0.y[0]};{1 - 2 * pad + bbox1.y[1] - bbox1.y[0]}"
     else:
         raise ValueError(f"Unknown attribute: {name}")
 
@@ -450,35 +412,43 @@ def animate_bbox(name: str, bboxes: list, duration: int = 2) -> svg.Element:
     )
 
 
-def animate(name: str, f: Callable[[int], float], duration: int = 2) -> svg.Element:
+def animate(name, values, duration=2):
     return svg.Animate(
         attributeName=name,
-        values=f"{f(0)};{f(1)}",
+        values=f"{values[0]}; {values[1]}",
         dur=timedelta(seconds=duration),
         repeatCount="indefinite",
     )
 
 
-def svg_left_arrow(x0, x1, y0, y1, s=0.1):
+def svg_left_arrow(x0_traj, x1_traj, y0_traj, y1_traj, s=0.1):
     line = svg.Line(
-        x1=0.1 + x0,
-        y1=0.5 + y0,
-        x2=0.5 + x1,
-        y2=0.5 + y1,
         stroke="black",
         stroke_width=0.05,
+        x2=0.5,
+        y2=0.5,
+        elements=[
+            animate("x1", [0.1 + a - b for a, b in zip(x0_traj, x1_traj)]),
+            animate("y1", [0.5 + a - b for (a, b) in zip(y0_traj, y1_traj)]),
+        ],
     )
     triangle = svg.Polygon(
         points=[
-            0.5 + x1 + s,
-            0.5 + y1 - s,
-            0.5 + x1 - s,
-            0.5 + y1,
-            0.5 + x1 + s,
-            0.5 + y1 + s,
+            0.5 + s,
+            0.5 - s,
+            0.5 - s,
+            0.5,
+            0.5 + s,
+            0.5 + s,
         ],
         stroke_width=0,
         fill="black",
-        # fill="black",
     )
-    return svg.G(elements=[line, triangle])
+    transform = svg.AnimateTransform(
+        attributeName="transform",
+        type="translate",
+        values=" ; ".join([f"{x},{y}" for (x, y) in zip(x1_traj, y1_traj)]),
+        dur=timedelta(seconds=2),
+        repeatCount="indefinite",
+    )
+    return svg.G(elements=[line, triangle, transform])
