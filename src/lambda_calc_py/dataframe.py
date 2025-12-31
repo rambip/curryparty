@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Callable, Iterable, Literal, Optional
+from typing import Iterable, Optional
 
 import polars as pl
 import svg
@@ -125,79 +125,85 @@ class Term:
             .select(pl.exclude("src_id"))
         )
 
-        b_subtree_duplicated = (
-            b_subtree.with_columns(
-                special=pl.col("id").eq(b).or_(None),
-            )
-            .join(
-                nodes.filter(pl.col("ref") == lamb).select(
-                    subst_id="id", var_depth="depth"
-                ),
-                how="cross",
-            )
-            .with_columns(depth=pl.col("var_depth") + (pl.col("depth") - b_depth) - 2)
+        vars = nodes.filter(pl.col("ref") == lamb).select(
+            subst_id="id", var_depth="depth", replaced=pl.lit(True)
         )
 
-        df2 = (
-            pl.concat(
-                [b_subtree_duplicated, nodes.join(b_subtree, on="id", how="anti")],
-                how="diagonal_relaxed",
-            )
-            .with_columns(
-                deleted=(
-                    pl.col("id").eq(redex)
-                    | pl.col("id").eq(lamb)
-                    | pl.col("ref").eq_missing(lamb)
-                ),
-            )
-            .select(
-                subst_id="subst_id",
-                src_id="id",
-                src_ref="ref",
-                special="special",
-                deleted="deleted",
-                depth=pl.when(pl.col("deleted")).then(None).otherwise(pl.col("depth")),
-            )
+        b_subtree_duplicated = b_subtree.join(
+            vars,
+            how="cross",
+        ).with_columns(depth=pl.col("var_depth") + (pl.col("depth") - b_depth) - 2)
+
+        rest_of_nodes = nodes.join(b_subtree, on="id", how="anti").with_columns(
+            deleted=(
+                pl.col("id").eq(redex)
+                | pl.col("id").eq(lamb)
+                | pl.col("ref").eq_missing(lamb)
+            ).replace(False, None),
+        )
+        print(rest_of_nodes)
+
+        df2 = pl.concat(
+            [b_subtree_duplicated, rest_of_nodes],
+            how="diagonal_relaxed",
+        ).select(
+            deleted="deleted",
+            subst_id=pl.col("subst_id").fill_null(pl.col("id")),
+            subst_ref=pl.col("subst_id").fill_null(pl.col("ref")),
+            src_id="id",
+            src_ref="ref",
+            depth=pl.when(pl.col("deleted").is_null()).then(pl.col("depth")),
         )
         new_ids = (
-            df2.filter(~pl.col("deleted"))
+            df2.filter(pl.col("deleted").is_null())
             .select(
                 "subst_id",
                 "src_id",
-                src_child=pl.when(pl.col("special"))
-                .then(pl.col("subst_id"))
-                .otherwise(pl.col("src_id")),
-                subst_child=pl.when(pl.col("special").is_null()).then(
-                    pl.col("subst_id")
-                ),
             )
-            # FIXME: join with subst_id.fill_null(src_id) to avoid the null_equals=True
-            .sort([pl.col("subst_id").fill_null(pl.col("src_id")), "src_id"])
+            .sort("subst_id", "src_id")
             .with_row_index("id")
         )
         df_out = (
-            df2.join(new_ids, on=["subst_id", "src_id"], how="left", nulls_equal=True)
+            df2.join(new_ids, on=["subst_id", "src_id"], how="left")
             .join(
                 new_ids.rename({"id": "ref"}),
-                left_on=["subst_id", "src_ref"],
+                left_on=["subst_ref", "src_ref"],
                 right_on=["subst_id", "src_id"],
                 how="left",
-                nulls_equal=True,
             )
             .select("id", "ref", "depth", "src_id")
         ).sort("id")
-        children_out = (
-            self.children.join(
-                b_subtree_duplicated, left_on="child", right_on="id", how="left"
+
+        children2 = (
+            self.children.join(b_subtree, left_on="child", right_on="id", how="anti")
+            .join(vars, left_on="child", right_on="subst_id", how="left")
+            .with_columns(
+                child=pl.when("replaced")
+                .then(b)
+                .otherwise(pl.col("child").replace(redex, a)),
+                subst_child=pl.col("child").replace(redex, a),
+                subst_id="id",
             )
-            .with_columns(pl.col("child").replace(redex, a))
+        )
+        children_duplicated = (
+            self.children.join(b_subtree, left_on="child", right_on="id")
+            .join(vars, how="cross")
+            .with_columns(subst_child="subst_id")
+        )
+        children_out = (
+            pl.concat(
+                [
+                    children_duplicated,
+                    children2,
+                ],
+                how="diagonal_relaxed",
+            )
             .rename({"id": "src_id", "child": "src_child"})
-            .join(new_ids, on=["src_id", "subst_id"], nulls_equal=True)
+            .join(new_ids, on=["src_id", "subst_id"])
             .join(
                 new_ids.rename({"id": "child"}),
-                left_on=["src_child", "subst_id"],
-                right_on=["src_child", "subst_child"],
-                nulls_equal=True,
+                left_on=["src_child", "subst_child"],
+                right_on=["src_id", "subst_id"],
             )
             .select("id", "child", "type")
         ).sort(["id", "child"])
@@ -211,8 +217,8 @@ class Term:
             bboxes = self.compute_bboxes()
             x = {i: b.x for (i, b) in bboxes.items()}
             y = {i: b.y for (i, b) in bboxes.items()}
-            x_expr = pl.col("id").replace_strict(x)
-            y_expr = pl.col("id").replace_strict(y)
+            x_expr = pl.col("id").replace_strict(x, default=None)
+            y_expr = pl.col("id").replace_strict(y, default=None)
         except (KeyError, AssertionError):
             x_expr = (None,)
             y_expr = None
