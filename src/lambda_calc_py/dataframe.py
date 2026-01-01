@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Union
 
 import polars as pl
 import svg
@@ -51,6 +51,79 @@ class BBox:
 
     def copy(self):
         return BBox(self.x, self.y)
+
+
+def V(name: str) -> "L":
+    return L()._(name)
+
+
+class L:
+    def __init__(self, *lambda_names):
+        self.n = len(lambda_names)
+        self.lambdas = {x: i for (i, x) in enumerate(lambda_names)}
+        self.refs = {}
+        self.children = [(i, i + 1, "down") for i in range(len(lambda_names))]
+        self.last_ = None
+
+    def lamb(self, name: str) -> "L":
+        self.children.append((self.n, self.n + 1, "down"))
+        self.lambdas[name] = self.n
+        self.n += 1
+        return self
+
+    def foo(self, children: list, refs: dict, parent_lambdas: dict, offset: int):
+        lambdas = parent_lambdas | self.lambdas
+        for a, b, c in self.children:
+            children.append((a + offset, b + offset, c))
+
+        for i, x in self.refs.items():
+            if isinstance(x, str) and x in lambdas:
+                refs[offset + i] = lambdas[x]
+            else:
+                refs[offset + i] = x
+
+    def _(self, x: Union[str, "L"]) -> "L":
+        self.last_ = self.n
+        if isinstance(x, L):
+            x.foo(self.children, self.refs, self.lambdas, self.n)
+            self.n += x.n
+        else:
+            assert isinstance(x, str)
+            self.refs[self.n] = x
+            self.n += 1
+        return self
+
+    def call(self, arg: Union[str, "L"]) -> "L":
+        assert self.last_ is not None
+        self.refs = {i + 1 if i >= self.last_ else i: x for (i, x) in self.refs.items()}
+        self.children = [
+            (a + 1, b + 1, c) if a >= self.last_ else (a, b, c)
+            for (a, b, c) in self.children
+        ]
+        self.n += 1
+
+        self.children.append((self.last_, self.last_ + 1, "left"))
+        self.children.append((self.last_, self.n, "right"))
+        if isinstance(arg, L):
+            arg.foo(self.children, self.refs, self.lambdas, self.n)
+            self.n += arg.n
+        else:
+            assert isinstance(arg, str), f"{type(arg)}"
+            self.refs[self.n] = arg
+            self.n += 1
+
+        return self
+
+    def build(self) -> "Term":
+        nodes = [
+            {
+                "id": i,
+                "ref": self.lambdas.get(self.refs.get(i, None), self.refs.get(i, None)),
+            }
+            for i in range(self.n)
+        ]
+        children = [{"id": i, "child": c, "type": t} for (i, c, t) in self.children]
+        return Term(nodes, children)
 
 
 class Term:
