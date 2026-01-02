@@ -30,46 +30,46 @@ def _():
 
 
 @app.cell
+def _(s):
+    s.parent.sort("id")
+    return
+
+
+@app.cell
 def _(zero):
-    mo.Html(zero.display().as_str())
+    zero
     return
 
 
 @app.cell
 def _(omega):
-    mo.Html(omega(omega).display().as_str())
+    omega(omega)
     return
 
 
 @app.cell
 def _(s, zero):
-    t = s(zero)
-    mo.Html(t.display().as_str())
-    return (t,)
+    s(zero)
+    return
 
 
 @app.cell
-def _(t):
-    step1, _ = t._beta()
+def _(s, zero):
+    step1, _ = s(zero)._beta()
+    step1
     return (step1,)
 
 
 @app.cell
 def _(step1):
-    mo.Html(step1.display().as_str())
-    return
-
-
-@app.cell
-def _(step1):
     step2, _ = step1._beta()
-    mo.Html(step2.display(step1).as_str())
+    step2
     return (step2,)
 
 
 @app.cell
-def _(step2):
-    mo.Html(step2.display().as_str())
+def _(step1, step2):
+    mo.Html(step2.display(step1).as_str())
     return
 
 

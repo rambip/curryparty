@@ -176,6 +176,12 @@ class Term:
             d[child] = d[parent] + 1
         return self.nodes.with_columns(depth=pl.col("id").replace_strict(d))
 
+    def subtree(self, node: int) -> pl.DataFrame:
+        depth = self.nodes.drop_nulls("id").row(node, named=True)["depth"]
+        return self.nodes.filter(pl.col("id") >= node).filter(
+            pl.col("depth").lt(depth).cum_sum().eq(0)
+        )
+
     def find_redex(self):
         pivoted = self.parent.pivot("type", index="parent")
         applications = pivoted.filter(pl.col("left").is_not_null())
@@ -197,11 +203,7 @@ class Term:
         redex, lamb, b, a, redex_depth = candidate
         b_depth = redex_depth + 1
 
-        b_subtree = (
-            nodes.filter(pl.col("id") >= b)
-            .filter(pl.col("depth").lt(b_depth).cum_sum().eq(0))
-            .select(pl.exclude("bid"))
-        )
+        b_subtree = self.subtree(b)
 
         vars = nodes.filter(pl.col("ref") == lamb).select(
             subst_id="id", depth="depth", replaced=pl.lit(True)
@@ -469,6 +471,9 @@ class Term:
                         animate("opacity", fade),
                     ],
                 )
+
+    def _repr_html_(self):
+        return self.display().as_str()
 
     def display(self, last: Optional["Term"] = None):
         return svg.SVG(
