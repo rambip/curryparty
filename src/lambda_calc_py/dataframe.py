@@ -14,7 +14,7 @@ SCHEMA_NODES = Schema(
         "bid": pl.Struct({"major": UInt32, "minor": UInt32}),
     },
 )
-SCHEMA_CHILDREN = Schema({"id": UInt32, "child": UInt32, "type": String})
+SCHEMA_PARENT = Schema({"parent": UInt32, "id": UInt32, "type": String})
 
 
 @dataclass
@@ -62,19 +62,19 @@ class L:
         self.n = len(lambda_names)
         self.lambdas = {x: i for (i, x) in enumerate(lambda_names)}
         self.refs = {}
-        self.children = [(i, i + 1, "down") for i in range(len(lambda_names))]
+        self.parents = [(i, i + 1, "down") for i in range(len(lambda_names))]
         self.last_ = None
 
     def lamb(self, name: str) -> "L":
-        self.children.append((self.n, self.n + 1, "down"))
+        self.parents.append((self.n, self.n + 1, "down"))
         self.lambdas[name] = self.n
         self.n += 1
         return self
 
-    def foo(self, children: list, refs: dict, parent_lambdas: dict, offset: int):
+    def foo(self, parent: list, refs: dict, parent_lambdas: dict, offset: int):
         lambdas = parent_lambdas | self.lambdas
-        for a, b, c in self.children:
-            children.append((a + offset, b + offset, c))
+        for a, b, c in self.parents:
+            parent.append((a + offset, b + offset, c))
 
         for i, x in self.refs.items():
             if isinstance(x, str) and x in lambdas:
@@ -85,7 +85,7 @@ class L:
     def _(self, x: Union[str, "L"]) -> "L":
         self.last_ = self.n
         if isinstance(x, L):
-            x.foo(self.children, self.refs, self.lambdas, self.n)
+            x.foo(self.parents, self.refs, self.lambdas, self.n)
             self.n += x.n
         else:
             assert isinstance(x, str)
@@ -96,16 +96,16 @@ class L:
     def call(self, arg: Union[str, "L"]) -> "L":
         assert self.last_ is not None
         self.refs = {i + 1 if i >= self.last_ else i: x for (i, x) in self.refs.items()}
-        self.children = [
+        self.parents = [
             (a + 1, b + 1, c) if a >= self.last_ else (a, b, c)
-            for (a, b, c) in self.children
+            for (a, b, c) in self.parents
         ]
         self.n += 1
 
-        self.children.append((self.last_, self.last_ + 1, "left"))
-        self.children.append((self.last_, self.n, "right"))
+        self.parents.append((self.last_, self.last_ + 1, "left"))
+        self.parents.append((self.last_, self.n, "right"))
         if isinstance(arg, L):
-            arg.foo(self.children, self.refs, self.lambdas, self.n)
+            arg.foo(self.parents, self.refs, self.lambdas, self.n)
             self.n += arg.n
         else:
             assert isinstance(arg, str), f"{type(arg)}"
@@ -122,19 +122,17 @@ class L:
             }
             for i in range(self.n)
         ]
-        children = [{"id": i, "child": c, "type": t} for (i, c, t) in self.children]
-        return Term(nodes, children)
+        parent = [{"parent": i, "id": c, "type": t} for (i, c, t) in self.parents]
+        return Term(nodes, parent)
 
 
 class Term:
-    def __init__(self, nodes, children):
+    def __init__(self, nodes, parent):
         self.nodes = pl.DataFrame(nodes, schema=SCHEMA_NODES)
         if self.nodes["id"].count() == 0:
             self.nodes = self.nodes.select(pl.exclude("id")).with_row_index("id")
 
-        self.children = pl.DataFrame(children, schema=SCHEMA_CHILDREN).sort(
-            "id", "child"
-        )
+        self.parent = pl.DataFrame(parent, schema=SCHEMA_PARENT).sort("parent", "id")
 
         if self.nodes["depth"].count() == 0:
             self.nodes = self.with_depth()
@@ -153,39 +151,39 @@ class Term:
             ],
             how="vertical_relaxed",
         )
-        children = pl.concat(
+        parent = pl.concat(
             [
                 pl.DataFrame(
                     [
-                        {"id": 0, "child": 1, "type": "left"},
-                        {"id": 0, "child": n + 1, "type": "right"},
+                        {"parent": 0, "id": 1, "type": "left"},
+                        {"parent": 0, "id": n + 1, "type": "right"},
                     ]
                 ),
-                self.children.with_columns(pl.col("id") + 1, pl.col("child") + 1),
-                other.children.with_columns(
-                    pl.col("id") + n + 1, pl.col("child") + n + 1
+                self.parent.with_columns(pl.col("parent") + 1, pl.col("id") + 1),
+                other.parent.with_columns(
+                    pl.col("parent") + n + 1, pl.col("id") + n + 1
                 ),
             ],
             how="vertical_relaxed",
         )
-        return Term(nodes, children)
+        return Term(nodes, parent)
 
     def with_depth(self):
         d = {0: 0}
-        for row in self.children.sort("id").iter_rows(named=True):
-            parent = row["id"]
-            child = row["child"]
+        for row in self.parent.sort("parent").iter_rows(named=True):
+            parent = row["parent"]
+            child = row["id"]
             d[child] = d[parent] + 1
         return self.nodes.with_columns(depth=pl.col("id").replace_strict(d))
 
     def find_redex(self):
-        pivoted = self.children.pivot("type", index="id")
+        pivoted = self.parent.pivot("type", index="parent")
         applications = pivoted.filter(pl.col("left").is_not_null())
         lambdas = pivoted.filter(pl.col("down").is_not_null())
 
         candidates = (
-            self.nodes.join(applications, on="id")
-            .join(lambdas, left_on="left", right_on="id", suffix="_left")
+            self.nodes.join(applications, left_on="id", right_on="parent")
+            .join(lambdas, left_on="left", right_on="parent", suffix="_left")
             .select("id", "left", "right", "down_left", "depth")
         )
 
@@ -255,49 +253,50 @@ class Term:
             ).select("id", "ref", "depth", "bid")
         ).sort("id")
 
-        children2 = (
-            self.children.join(b_subtree, left_on="child", right_on="id", how="anti")
-            .join(vars, left_on="child", right_on="subst_id", how="left")
+        parent2 = (
+            self.parent.join(b_subtree, on="id", how="anti")
+            .join(vars, left_on="id", right_on="subst_id", how="left")
             .select(
                 "type",
-                bid=pl.struct(major=pl.col("id"), minor=pl.col("id")),
-                bid_child=pl.struct(
-                    major=pl.col("child").replace(redex, a),
+                bid_parent=pl.struct(major=pl.col("parent"), minor=pl.col("parent")),
+                bid=pl.struct(
+                    major=pl.col("id").replace(redex, a),
                     minor=pl.when("replaced")
                     .then(b)
-                    .otherwise(pl.col("child").replace(redex, a)),
+                    .otherwise(pl.col("id").replace(redex, a)),
                 ),
             )
         )
-        children_duplicated = (
-            self.children.join(b_subtree, left_on="child", right_on="id")
+        parent_duplicated = (
+            self.parent.join(b_subtree, on="id")
             .join(vars, how="cross")
             .select(
                 "type",
+                bid_parent=pl.struct(major="subst_id", minor="parent"),
                 bid=pl.struct(major="subst_id", minor="id"),
-                bid_child=pl.struct(major="subst_id", minor="child"),
             )
         )
-        children_out = (
+        parent_out = (
             pl.concat(
                 [
-                    children_duplicated,
-                    children2,
+                    parent_duplicated,
+                    parent2,
                 ],
                 how="diagonal_relaxed",
             )
-            .join(new_ids, on="bid")
             .join(
-                new_ids.rename({"id": "child"}),
-                left_on="bid_child",
-                right_on="bid",
+                new_ids.rename({"id": "parent"}), left_on="bid_parent", right_on="bid"
             )
-            .select("id", "child", "type")
+            .join(
+                new_ids,
+                on="bid",
+            )
+            .select("parent", "id", "type")
         )
-        return Term(df_out, children_out), True
+        return Term(df_out, parent_out), True
 
     def compute_arity(self):
-        return dict(self.children.group_by("id").len().iter_rows())
+        return dict(self.parent.group_by(id="parent").len().iter_rows())
 
     def summary(self):
         try:
@@ -310,9 +309,7 @@ class Term:
             x_expr = (None,)
             y_expr = None
         arity = self.compute_arity()
-        return self.nodes.join(
-            self.children, left_on="id", right_on="child", suffix="_parent", how="left"
-        ).with_columns(
+        return self.nodes.join(self.parent, on="id", how="left").with_columns(
             x=x_expr,
             y=y_expr,
             arity=pl.col("id").replace_strict(arity, default=0),
@@ -321,9 +318,9 @@ class Term:
     def compute_bboxes(self) -> dict[int, BBox]:
         result = {0: BBox(None, (0, 0))}
         arities = self.compute_arity()
-        for row in self.children.sort("id").iter_rows(named=True):
-            parent = row["id"]
-            child = row["child"]
+        for row in self.parent.sort("id").iter_rows(named=True):
+            parent = row["parent"]
+            child = row["id"]
             connection = row["type"]
 
             if connection == "right":
@@ -338,12 +335,12 @@ class Term:
         next_var = 0
 
         for row in (
-            self.children.join(self.nodes, left_on="child", right_on="id")
-            .sort(["child", "id"], descending=True)
+            self.parent.join(self.nodes, on="id")
+            .sort(["id", "parent"], descending=True)
             .iter_rows(named=True)
         ):
-            parent = row["id"]
-            child = row["child"]
+            parent = row["parent"]
+            child = row["id"]
             connection = row["type"]
             ref = row["ref"]
             if arities.get(child, 0) == 0:
@@ -378,9 +375,9 @@ class Term:
         arities = self.compute_arity()
         trajectories = {}
 
-        for row in self.nodes.join(
-            self.children, left_on="id", right_on="child", suffix="_parent", how="left"
-        ).iter_rows(named=True):
+        for row in self.nodes.join(self.parent, on="id", how="left").iter_rows(
+            named=True
+        ):
             id = row["id"]
             src_id = row["bid"]["minor"] if row["bid"] else None
             if id is None:
@@ -391,12 +388,12 @@ class Term:
             else:
                 trajectories[id] = [last_bboxes[src_id], bboxes[id]]
 
-        for row in self.nodes.join(
-            self.children, left_on="id", right_on="child", suffix="_parent", how="left"
-        ).iter_rows(named=True):
+        for row in self.nodes.join(self.parent, on="id", how="left").iter_rows(
+            named=True
+        ):
             target_id = row["id"]
             connection = row["type"]
-            parent = row["id_parent"]
+            parent = row["parent"]
             ref = row["ref"]
             src_id = row["bid"]["minor"] if row["bid"] else None
 
