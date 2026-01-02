@@ -18,6 +18,12 @@ def _():
 
 
 @app.cell
+def _(zero):
+    zero
+    return
+
+
+@app.cell
 def _():
     s = (
         L("n", "f", "x")
@@ -27,12 +33,6 @@ def _():
         )
     ).build()
     return (s,)
-
-
-@app.cell
-def _(s):
-    s.parent.sort("id")
-    return
 
 
 @app.cell
@@ -49,13 +49,14 @@ def _(omega):
 
 @app.cell
 def _(s, zero):
-    s(zero)
-    return
+    t = s(zero)
+    t
+    return (t,)
 
 
 @app.cell
-def _(s, zero):
-    step1, _ = s(zero)._beta()
+def _(t):
+    step1, _ = t._beta()
     step1
     return (step1,)
 
@@ -70,6 +71,18 @@ def _(step1):
 @app.cell
 def _(step1, step2):
     mo.Html(step2.display(step1).as_str())
+    return
+
+
+@app.cell
+def _(omega, zero):
+    omega(zero)
+    return
+
+
+@app.cell
+def _(omega, zero):
+    omega(zero)._beta()
     return
 
 

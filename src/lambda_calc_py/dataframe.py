@@ -4,17 +4,17 @@ from typing import Iterable, Optional, Union
 
 import polars as pl
 import svg
-from polars import Schema, String, UInt32
+from polars import Schema, UInt32
 
-SCHEMA_NODES = Schema(
+SCHEMA = Schema(
     {
         "id": UInt32,
         "ref": UInt32,
+        "arg": UInt32,
         "depth": UInt32,
         "bid": pl.Struct({"major": UInt32, "minor": UInt32}),
     },
 )
-SCHEMA_PARENT = Schema({"parent": UInt32, "id": UInt32, "type": String})
 
 
 @dataclass
@@ -62,30 +62,29 @@ class L:
         self.n = len(lambda_names)
         self.lambdas = {x: i for (i, x) in enumerate(lambda_names)}
         self.refs = {}
-        self.parents = [(i, i + 1, "down") for i in range(len(lambda_names))]
+        self.args = {}
         self.last_ = None
 
     def lamb(self, name: str) -> "L":
-        self.parents.append((self.n, self.n + 1, "down"))
-        self.lambdas[name] = self.n
         self.n += 1
+        self.lambdas[name] = self.n
         return self
 
-    def foo(self, parent: list, refs: dict, parent_lambdas: dict, offset: int):
+    def foo(self, args: dict, refs: dict, parent_lambdas: dict, offset: int):
         lambdas = parent_lambdas | self.lambdas
-        for a, b, c in self.parents:
-            parent.append((a + offset, b + offset, c))
-
         for i, x in self.refs.items():
             if isinstance(x, str) and x in lambdas:
                 refs[offset + i] = lambdas[x]
             else:
                 refs[offset + i] = x
 
+        for i, x in self.args.items():
+            args[offset + i] = offset + x
+
     def _(self, x: Union[str, "L"]) -> "L":
         self.last_ = self.n
         if isinstance(x, L):
-            x.foo(self.parents, self.refs, self.lambdas, self.n)
+            x.foo(self.args, self.refs, self.lambdas, self.n)
             self.n += x.n
         else:
             assert isinstance(x, str)
@@ -96,16 +95,15 @@ class L:
     def call(self, arg: Union[str, "L"]) -> "L":
         assert self.last_ is not None
         self.refs = {i + 1 if i >= self.last_ else i: x for (i, x) in self.refs.items()}
-        self.parents = [
-            (a + 1, b + 1, c) if a >= self.last_ else (a, b, c)
-            for (a, b, c) in self.parents
-        ]
-        self.n += 1
+        self.args = {
+            (i + 1 if i >= self.last_ else i): (x + 1 if i >= self.last_ else x)
+            for (i, x) in self.args.items()
+        }
 
-        self.parents.append((self.last_, self.last_ + 1, "left"))
-        self.parents.append((self.last_, self.n, "right"))
+        self.n += 1
+        self.args[self.last_] = self.n
         if isinstance(arg, L):
-            arg.foo(self.parents, self.refs, self.lambdas, self.n)
+            arg.foo(self.args, self.refs, self.lambdas, self.n)
             self.n += arg.n
         else:
             assert isinstance(arg, str), f"{type(arg)}"
@@ -119,20 +117,18 @@ class L:
             {
                 "id": i,
                 "ref": self.lambdas.get(self.refs.get(i, None), self.refs.get(i, None)),
+                "arg": self.args.get(i, None),
             }
             for i in range(self.n)
         ]
-        parent = [{"parent": i, "id": c, "type": t} for (i, c, t) in self.parents]
-        return Term(nodes, parent)
+        return Term(nodes)
 
 
 class Term:
-    def __init__(self, nodes, parent):
-        self.nodes = pl.DataFrame(nodes, schema=SCHEMA_NODES)
+    def __init__(self, nodes):
+        self.nodes = pl.DataFrame(nodes, schema=SCHEMA)
         if self.nodes["id"].count() == 0:
             self.nodes = self.nodes.select(pl.exclude("id")).with_row_index("id")
-
-        self.parent = pl.DataFrame(parent, schema=SCHEMA_PARENT).sort("parent", "id")
 
         if self.nodes["depth"].count() == 0:
             self.nodes = self.with_depth()
@@ -141,67 +137,66 @@ class Term:
         n = len(self.nodes)
         nodes = pl.concat(
             [
-                pl.DataFrame([{"id": 0, "depth": 0}], schema=SCHEMA_NODES),
+                pl.DataFrame([{"id": 0, "depth": 0, "arg": n + 1}], schema=SCHEMA),
                 self.nodes.with_columns(
-                    pl.col("id") + 1, pl.col("depth") + 1, pl.col("ref") + 1
+                    pl.col("id") + 1,
+                    pl.col("depth") + 1,
+                    pl.col("ref") + 1,
+                    pl.col("arg") + 1,
                 ),
                 other.nodes.with_columns(
-                    pl.col("id") + n + 1, pl.col("depth") + 1, pl.col("ref") + n + 1
+                    pl.col("id") + n + 1,
+                    pl.col("depth") + 1,
+                    pl.col("ref") + n + 1,
+                    pl.col("arg") + n + 1,
                 ),
             ],
             how="vertical_relaxed",
         )
-        parent = pl.concat(
-            [
-                pl.DataFrame(
-                    [
-                        {"parent": 0, "id": 1, "type": "left"},
-                        {"parent": 0, "id": n + 1, "type": "right"},
-                    ]
-                ),
-                self.parent.with_columns(pl.col("parent") + 1, pl.col("id") + 1),
-                other.parent.with_columns(
-                    pl.col("parent") + n + 1, pl.col("id") + n + 1
-                ),
-            ],
-            how="vertical_relaxed",
-        )
-        return Term(nodes, parent)
+        return Term(nodes)
 
     def with_depth(self):
         d = {0: 0}
-        for row in self.parent.sort("parent").iter_rows(named=True):
-            parent = row["parent"]
-            child = row["id"]
-            d[child] = d[parent] + 1
+        for row in self.nodes.iter_rows(named=True):
+            if row["arg"] is not None:
+                d[row["arg"]] = d[row["id"]] + 1
+            if row["ref"] is None:
+                d[row["id"] + 1] = d[row["id"]] + 1
         return self.nodes.with_columns(depth=pl.col("id").replace_strict(d))
 
     def subtree(self, node: int) -> pl.DataFrame:
+        # TODO:
+        # - remove all depth computation
+        # - take while it's a lambda
+        #    - either you reach a variable and you return the subtree
+        #    - either you reach an application and you return the "arg"
         depth = self.nodes.drop_nulls("id").row(node, named=True)["depth"]
         return self.nodes.filter(pl.col("id") >= node).filter(
-            pl.col("depth").lt(depth).cum_sum().eq(0)
+            pl.col("depth").le(depth).cum_sum().eq(1)
         )
 
-    def find_redex(self):
-        pivoted = self.parent.pivot("type", index="parent")
-        applications = pivoted.filter(pl.col("left").is_not_null())
-        lambdas = pivoted.filter(pl.col("down").is_not_null())
-
-        candidates = (
-            self.nodes.join(applications, left_on="id", right_on="parent")
-            .join(lambdas, left_on="left", right_on="parent", suffix="_left")
-            .select("id", "left", "right", "down_left", "depth")
+    def find_redexes(self):
+        parents = self.nodes.filter(pl.col("ref").is_null())
+        return (
+            parents.join(
+                self.nodes, left_on="id", right_on=pl.col("id") - 1, suffix="_child"
+            )
+            .filter(
+                pl.col("arg").is_not_null(),
+                pl.col("ref_child").is_null(),
+                pl.col("arg_child").is_null(),
+            )
+            .select(redex="id", lamb="id_child", b="arg")
         )
-
-        return candidates.row(0) if len(candidates) > 0 else None
 
     def _beta(self) -> tuple["Term", bool]:
         nodes = self.nodes.drop_nulls("id")
-        candidate = self.find_redex()
-        if candidate is None:
+        candidates = self.find_redexes()
+        if len(candidates) == 0:
             return self, False
-        redex, lamb, b, a, redex_depth = candidate
-        b_depth = redex_depth + 1
+        redex, lamb, b = candidates.row(0)
+        a = lamb + 1
+        b_depth = self.nodes["depth"][b]
 
         b_subtree = self.subtree(b)
 
@@ -211,21 +206,19 @@ class Term:
 
         b_subtree_duplicated = b_subtree.join(
             vars, how="cross", suffix="_var"
-        ).with_columns(depth=pl.col("depth_var") + (pl.col("depth") - b_depth) - 2)
+        ).with_columns(
+            depth=pl.col("depth_var") + (pl.col("depth") - b_depth) - 2,
+        )
 
-        rest_of_nodes = nodes.join(b_subtree, on="id", how="anti").with_columns()
+        rest_of_nodes = nodes.join(b_subtree, on="id", how="anti")
 
         new_nodes = (
             pl.concat(
                 [b_subtree_duplicated, rest_of_nodes],
                 how="diagonal_relaxed",
             )
-            .join(
-                vars,
-                left_on="id",
-                right_on="subst_id",
-                how="anti",
-            )
+            .join(vars, left_on="id", right_on="subst_id", how="anti")
+            .join(vars, left_on="arg", right_on="subst_id", how="left", suffix="_arg")
             .filter(
                 pl.col("id").ne(redex),
                 pl.col("id").ne(lamb),
@@ -238,67 +231,43 @@ class Term:
                     major=pl.col("subst_id").fill_null(pl.col("ref")),
                     minor=pl.col("ref"),
                 ),
+                bid_arg=(
+                    pl.struct(
+                        major=pl.col("subst_id").fill_null(
+                            pl.col("arg").replace(redex, a)
+                        ),
+                        minor=pl.when("replaced_arg")
+                        .then(b)
+                        .otherwise(pl.col("arg").replace(redex, a)),
+                    )
+                ),
                 depth="depth",
             )
             .sort("bid")
             .with_row_index("id")
         )
+        self.new_nodes = new_nodes
 
         new_ids = new_nodes.select("id", "bid")
 
-        df_out = (
-            new_nodes.join(
-                new_ids.rename({"id": "ref"}),
-                left_on="bid_ref",
-                right_on="bid",
-                how="left",
-            ).select("id", "ref", "depth", "bid")
-        ).sort("id")
-
-        parent2 = (
-            self.parent.join(b_subtree, on="id", how="anti")
-            .join(vars, left_on="id", right_on="subst_id", how="left")
-            .select(
-                "type",
-                bid_parent=pl.struct(major=pl.col("parent"), minor=pl.col("parent")),
-                bid=pl.struct(
-                    major=pl.col("id").replace(redex, a),
-                    minor=pl.when("replaced")
-                    .then(b)
-                    .otherwise(pl.col("id").replace(redex, a)),
-                ),
+        return (
+            Term(
+                new_nodes.join(
+                    new_ids.rename({"id": "ref"}),
+                    left_on="bid_ref",
+                    right_on="bid",
+                    how="left",
+                )
+                .join(
+                    new_ids.rename({"id": "arg"}),
+                    left_on="bid_arg",
+                    right_on="bid",
+                    how="left",
+                )
+                .select("id", "ref", "arg", "depth", "bid")
+                .sort("id")
             )
-        )
-        parent_duplicated = (
-            self.parent.join(b_subtree, on="id")
-            .join(vars, how="cross")
-            .select(
-                "type",
-                bid_parent=pl.struct(major="subst_id", minor="parent"),
-                bid=pl.struct(major="subst_id", minor="id"),
-            )
-        )
-        parent_out = (
-            pl.concat(
-                [
-                    parent_duplicated,
-                    parent2,
-                ],
-                how="diagonal_relaxed",
-            )
-            .join(
-                new_ids.rename({"id": "parent"}), left_on="bid_parent", right_on="bid"
-            )
-            .join(
-                new_ids,
-                on="bid",
-            )
-            .select("parent", "id", "type")
-        )
-        return Term(df_out, parent_out), True
-
-    def compute_arity(self):
-        return dict(self.parent.group_by(id="parent").len().iter_rows())
+        ), True
 
     def summary(self):
         try:
@@ -310,76 +279,59 @@ class Term:
         except (KeyError, AssertionError):
             x_expr = (None,)
             y_expr = None
-        arity = self.compute_arity()
-        return self.nodes.join(self.parent, on="id", how="left").with_columns(
+        candidates = self.find_redexes()
+        return candidates, self.nodes.with_columns(
             x=x_expr,
             y=y_expr,
-            arity=pl.col("id").replace_strict(arity, default=0),
         )
 
     def compute_bboxes(self) -> dict[int, BBox]:
         result = {0: BBox(None, (0, 0))}
-        arities = self.compute_arity()
-        for row in self.parent.sort("id").iter_rows(named=True):
-            parent = row["parent"]
-            child = row["id"]
-            connection = row["type"]
-
-            if connection == "right":
-                result[child] = result[parent].copy()
-
-            elif connection == "left" and arities.get(child, 0) != 2:
-                result[child] = result[parent].copy()
-
+        for row in self.nodes.iter_rows(named=True):
+            if row["ref"] is not None:
+                continue
+            parent = row["id"]
+            child = row["id"] + 1
+            arg = row["arg"]
+            if arg is not None:
+                result[child] = result[parent].shift_y(
+                    0 if self.nodes["arg"][child] is None else 1
+                )
+                result[arg] = result[parent].shift_y(0)
             else:
                 result[child] = result[parent].shift_y(1)
 
         next_var = 0
 
-        for row in (
-            self.parent.join(self.nodes, on="id")
-            .sort(["id", "parent"], descending=True)
-            .iter_rows(named=True)
-        ):
-            parent = row["parent"]
-            child = row["id"]
-            connection = row["type"]
+        for row in self.nodes.sort("id", descending=True).iter_rows(named=True):
+            parent = row["id"]
             ref = row["ref"]
-            if arities.get(child, 0) == 0:
-                assert ref is not None
-                result[child].x = (next_var, next_var)
+            arg = row["arg"]
+            if ref is not None:
+                result[parent].x = (next_var, next_var)
                 next_var -= 1
-
-                result[ref] = result[child] | result.get(ref, BBox(None, None))
-
-            # Update parent
-            if connection == "left":
-                if result[parent].x is None:
-                    result[parent].x = result[child].x
-
-            elif connection == "right":
-                if result[parent].x is not None:
-                    result[parent] = result[child] | result[parent]
+                result[ref] = result[parent] | result.get(ref, BBox(None, None))
 
             else:
+                child = parent + 1
+                result[parent].x = result[child].x
                 result[parent] = result[child] | result[parent]
+
+                if arg is not None:
+                    result[parent] = result[arg] | result[parent]
+
         return result
 
     def _svg_blocks(self, last: Optional["Term"]) -> Iterable[svg.Element]:
         bboxes = self.compute_bboxes()
         if last is not None:
-            arities_last = last.compute_arity()
             last_bboxes = last.compute_bboxes()
         else:
-            arities_last = None
             last_bboxes = None
 
-        arities = self.compute_arity()
         trajectories = {}
 
-        for row in self.nodes.join(self.parent, on="id", how="left").iter_rows(
-            named=True
-        ):
+        for row in self.nodes.iter_rows(named=True):
             id = row["id"]
             src_id = row["bid"]["minor"] if row["bid"] else None
             if id is None:
@@ -390,46 +342,19 @@ class Term:
             else:
                 trajectories[id] = [last_bboxes[src_id], bboxes[id]]
 
-        for row in self.nodes.join(self.parent, on="id", how="left").iter_rows(
-            named=True
-        ):
+        for row in self.nodes.iter_rows(named=True):
             target_id = row["id"]
-            connection = row["type"]
-            parent = row["parent"]
-            ref = row["ref"]
             src_id = row["bid"]["minor"] if row["bid"] else None
-
+            arg = row["arg"]
             if target_id is None and last is not None:
                 traj = [bboxes[src_id], bboxes[src_id]]
-                arity = arities_last.get(src_id, 0)
                 fade = (1, 0)
             else:
-                arity = arities.get(target_id, 0)
                 traj = trajectories[target_id]
                 fade = (1, 1)
 
-            if connection == "right":
-                traj_parent = trajectories[parent]
-                assert parent is not None
-                yield svg_left_arrow(
-                    [t.x[0] for t in traj],
-                    [t.x[1] for t in traj_parent],
-                    [t.y[0] for t in traj],
-                    [t.y[0] for t in traj_parent],
-                )
-
-            if arity == 1:  # Lambda
-                yield svg.Rect(
-                    height=0.8,
-                    fill="blue",
-                    elements=[
-                        animate_bbox("x", traj),
-                        animate_bbox("y", traj),
-                        animate_bbox("width", traj),
-                        animate("opacity", fade),
-                    ],
-                )
-            elif arity == 0:  # Variable
+            ref = row["ref"]
+            if ref is not None:
                 yield svg.Rect(
                     width=0.8,
                     height=0.8,
@@ -457,7 +382,9 @@ class Term:
                         animate("opacity", fade),
                     ],
                 )
-            elif arity == 2:  # Application
+                continue
+
+            if arg is not None:
                 yield svg.Rect(
                     height=0.8,
                     fill_opacity=0.5,
@@ -471,6 +398,26 @@ class Term:
                         animate("opacity", fade),
                     ],
                 )
+
+                traj_arg = trajectories[arg]
+                yield svg_left_arrow(
+                    [t.x[0] for t in traj_arg],
+                    [t.x[1] for t in traj],
+                    [t.y[0] for t in traj_arg],
+                    [t.y[0] for t in traj],
+                )
+                continue
+
+            yield svg.Rect(
+                height=0.8,
+                fill="blue",
+                elements=[
+                    animate_bbox("x", traj),
+                    animate_bbox("y", traj),
+                    animate_bbox("width", traj),
+                    animate("opacity", fade),
+                ],
+            )
 
     def _repr_html_(self):
         return self.display().as_str()
