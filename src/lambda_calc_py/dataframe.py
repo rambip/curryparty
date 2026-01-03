@@ -19,39 +19,34 @@ SCHEMA = Schema(
 
 
 @dataclass
-class BBox:
-    x: Optional[tuple[int, int]]
-    y: Optional[tuple[int, int]]
+class Interval:
+    values: Optional[tuple[int, int]]
 
-    def __or__(self: "BBox", other: "BBox") -> "BBox":
-        def merge(a, b):
-            if a is None:
-                if b is None:
-                    return None
-                else:
-                    return b
+    def __or__(self: "Interval", other: "Interval") -> "Interval":
+        if self.values is None:
+            if other.values is None:
+                return Interval(None)
             else:
-                if b is None:
-                    return a
-                else:
-                    return (min(a[0], b[0]), max(a[1], b[1]))
-
-        return BBox(merge(self.x, other.x), merge(self.y, other.y))
-
-    def shift_x(self, offset: int) -> "BBox":
-        if self.x is None:
-            return BBox(self.x, self.y)
+                return other
         else:
-            return BBox((self.x[0] + offset, self.x[1] + offset), self.y)
+            if other.values is None:
+                return self
+        return Interval(
+            (min(self.values[0], other.values[0]), max(self.values[1], other.values[1]))
+        )
 
-    def shift_y(self, offset: int) -> "BBox":
-        if self.y is None:
-            return BBox(self.x, self.y)
+    def __getitem__(self, index):
+        assert self.values is not None, "interval is empty"
+        return self.values[index]
+
+    def shift(self, offset: int) -> "Interval":
+        if self.values is None:
+            return Interval(None)
         else:
-            return BBox(self.x, (self.y[0] + offset, self.y[1] + offset))
+            return Interval((self.values[0] + offset, self.values[1] + offset))
 
     def copy(self):
-        return BBox(self.x, self.y)
+        return Interval(self.values)
 
 
 class L:
@@ -131,7 +126,7 @@ class Term:
             pl.col("id") + offset,
             pl.col("ref") + offset,
             pl.col("arg") + offset,
-            bid=pl.struct(major=pl.col("id"), minor=pl.col("id")),
+            bid=None,
         )
 
     def __call__(self, other: "Term") -> "Term":
@@ -177,6 +172,7 @@ class Term:
         if len(candidates) == 0:
             return self, False
         redex, lamb, b = candidates.row(0)
+        self.b = b
         a = lamb + 1
 
         vars = self.nodes.filter(pl.col("ref") == lamb).select("id", replaced=True)
@@ -235,9 +231,7 @@ class Term:
 
     def summary(self):
         try:
-            bboxes = self.compute_bboxes()
-            x = {i: b.x for (i, b) in bboxes.items()}
-            y = {i: b.y for (i, b) in bboxes.items()}
+            x, y = self.compute_bboxes()
             x_expr = pl.col("id").replace_strict(x, default=None)
             y_expr = pl.col("id").replace_strict(y, default=None)
         except (KeyError, AssertionError):
@@ -249,19 +243,18 @@ class Term:
             y=y_expr,
         )
 
-    def compute_bboxes(self) -> dict[int, BBox]:
-        result = {0: BBox(None, (0, 0))}
+    def compute_bboxes(self) -> tuple[dict[int, Interval], dict[int, Interval]]:
+        y = {0: Interval((0, 0))}
+        x = {}
         for node, ref, arg in self.nodes.select("id", "ref", "arg").iter_rows():
             if ref is not None:
                 continue
             child = node + 1
             if arg is not None:
-                result[child] = result[node].shift_y(
-                    0 if self.nodes["arg"][child] is None else 1
-                )
-                result[arg] = result[node].shift_y(0)
+                y[child] = y[node].shift(0 if self.nodes["arg"][child] is None else 1)
+                y[arg] = y[node].shift(0)
             else:
-                result[child] = result[node].shift_y(1)
+                y[child] = y[node].shift(1)
 
         next_var = 0
 
@@ -271,118 +264,186 @@ class Term:
             .iter_rows()
         ):
             if ref is not None:
-                result[node].x = (next_var, next_var)
+                x[node] = Interval((next_var, next_var))
                 next_var -= 1
-                result[ref] = result[node] | result[ref]
+                x[ref] = x[node] | x.get(ref, Interval(None))
 
             else:
                 child = node + 1
-                result[node] = result[child] | result[node]
+                x[node] = x[child] | x.get(node, Interval(None))
+                y[node] = y[child] | y[node]
 
-        return result
+        return x, y
+
+    def show_reduction(self):
+        next_term, changed = self._beta()
+        return LambdaAnimation(self, next_term)
 
     def _svg_blocks(self, last: Optional["Term"]) -> Iterable[svg.Element]:
-        bboxes = self.compute_bboxes()
-        if last is not None:
-            last_bboxes = last.compute_bboxes()
-        else:
-            last_bboxes = None
+        target_x, target_y = self.compute_bboxes()
 
         trajectories = {}
 
-        for row in self.nodes.iter_rows(named=True):
-            id = row["id"]
-            src_id = row["bid"]["minor"] if row["bid"] else None
-            if id is None:
-                trajectories[id] = [bboxes[src_id], bboxes[src_id]]
-
-            elif last_bboxes is None:
-                trajectories[id] = [bboxes[id], bboxes[id]]
+        def rect(is_arg: bool, is_ref: bool, traj, fade=[1 for _ in range(4)]):
+            fill_opacity = 1
+            stroke_width = 0.1
+            stroke_opacity = 0
+            stroke = "black"
+            if is_arg:
+                fill = "orange"
+                fill_opacity = 0
+                stroke = "orange"
+            elif is_ref:
+                fill = "red"
             else:
-                trajectories[id] = [last_bboxes[src_id], bboxes[id]]
+                fill = "blue"
+            return svg.Rect(
+                width=0.8,
+                height=0.8,
+                fill=fill,
+                stroke_width=stroke_width,
+                stroke=stroke,
+                # fill_opacity=fill_opacity,
+                # stroke_opacity=stroke_opacity,
+                elements=[
+                    animate("x", [0.1 + x[0] for x in traj["x"]]),
+                    animate("y", [0.1 + y[0] for y in traj["y"]]),
+                    animate("width", [0.8 + x[1] - x[0] for x in traj["x"]]),
+                    animate("opacity", fade),
+                ],
+            )
+
+        if last is not None:
+            src_x, src_y = last.compute_bboxes()
+            y_b = src_y[last.b][0]
+            foo = set()
+            for target_node, bid, ref, arg in self.nodes.select(
+                "id", "bid", "ref", "arg"
+            ).iter_rows():
+                assert bid is not None
+                major = bid["major"]
+                src_node = bid["minor"]
+                foo.add(src_node)
+                is_new = major != src_node
+                if is_new:
+                    delta_y = src_y[major][0] - y_b
+                    traj = {
+                        "x": [
+                            src_x[src_node],
+                            src_x[src_node] if is_new else target_x[target_node],
+                            target_x[target_node],
+                            target_x[target_node],
+                        ],
+                        "y": [
+                            src_y[src_node],
+                            src_y[src_node].shift(3),
+                            src_y[src_node].shift(delta_y),
+                            target_y[target_node],
+                        ],
+                    }
+                else:
+                    traj = {
+                        "x": [
+                            src_x[src_node],
+                            target_x[target_node],
+                            target_x[target_node],
+                            target_x[target_node],
+                        ],
+                        "y": [
+                            src_y[src_node],
+                            src_y[src_node],
+                            src_y[src_node],
+                            target_y[target_node],
+                        ],
+                    }
+
+                trajectories[target_node] = traj
+                yield rect(arg is not None, ref is not None, traj)
+
+            for node, arg, ref in last.nodes.select("id", "arg", "ref").iter_rows():
+                if node not in foo:
+                    traj = {
+                        "x": [src_x[node] for _ in range(4)],
+                        "y": [src_y[node] for _ in range(4)],
+                    }
+                    fade = [1, 1, 0, 0]
+                    yield rect(arg is not None, ref is not None, traj, fade)
+
+                    if ref is not None:
+                        yield svg.Line(
+                            stroke_width=0.1,
+                            stroke="gray",
+                            elements=[
+                                animate("x1", [x[0] + 0.5 for x in traj["x"]]),
+                                animate("y1", [y[0] + 0.1 for y in traj["y"]]),
+                                animate("x2", [x[0] + 0.5 for x in traj["x"]]),
+                                animate(
+                                    "y2",
+                                    [0.9 + y[0] for y in trajectories[ref]["y"]],
+                                ),
+                                # animate("opacity", traj["opacity"]),
+                            ],
+                        )
+                        continue
+
+                    if arg is not None:
+                        traj_arg = trajectories[arg]
+                        yield svg_left_arrow(
+                            [x[0] for x in traj_arg["x"]],
+                            [y[0] for y in traj["y"]],
+                            [x[1] for x in traj["x"]],
+                            [y[0] for y in traj["y"]],
+                        )
+                        continue
+        else:
+            for target_node, arg, ref in self.nodes.select(
+                "id", "arg", "ref"
+            ).iter_rows():
+                traj = {
+                    "x": [target_x[target_node] for _ in range(4)],
+                    "y": [target_y[target_node] for _ in range(4)],
+                }
+                trajectories[target_node] = traj
+                yield rect(arg is not None, ref is not None, traj)
 
         for target_id, bid, ref, arg in (
             self.nodes.select("id", "bid", "ref", "arg")
             .sort("id", descending=True)
             .iter_rows()
         ):
-            src_id = bid["minor"] if bid else None
-            if target_id is None and last is not None:
-                traj = [bboxes[src_id], bboxes[src_id]]
-                fade = (1, 0)
-            else:
-                traj = trajectories[target_id]
-                fade = (1, 1)
+            traj = trajectories[target_id]
 
             if ref is not None:
-                yield svg.Rect(
-                    width=0.8,
-                    height=0.8,
-                    fill="red",
-                    elements=[
-                        animate_bbox("x", traj),
-                        animate_bbox("y", traj),
-                        animate("opacity", fade),
-                    ],
-                )
                 yield svg.Line(
-                    stroke_width=0.05,
+                    stroke_width=0.1,
                     stroke="gray",
                     elements=[
-                        animate("x1", [traj[0].x[0] + 0.5, traj[1].x[0] + 0.5]),
-                        animate("y1", [traj[0].y[0] + 0.1, traj[1].y[0] + 0.1]),
-                        animate("x2", [traj[0].x[0] + 0.5, traj[1].x[0] + 0.5]),
+                        animate("x1", [x[0] + 0.5 for x in traj["x"]]),
+                        animate("y1", [y[0] + 0.1 for y in traj["y"]]),
+                        animate("x2", [x[0] + 0.5 for x in traj["x"]]),
                         animate(
                             "y2",
-                            [
-                                trajectories[ref][0].y[0] + 0.9,
-                                trajectories[ref][1].y[0] + 0.9,
-                            ],
+                            [0.9 + y[0] for y in trajectories[ref]["y"]],
                         ),
-                        animate("opacity", fade),
+                        # animate("opacity", traj["opacity"]),
                     ],
                 )
                 continue
 
             if arg is not None:
-                yield svg.Rect(
-                    height=0.8,
-                    fill_opacity=0.5,
-                    stroke="orange",
-                    stroke_width=0.1,
-                    fill="none",
-                    elements=[
-                        animate_bbox("x", traj),
-                        animate_bbox("y", traj),
-                        animate_bbox("width", traj),
-                        animate("opacity", fade),
-                    ],
-                )
-
                 traj_arg = trajectories[arg]
                 yield svg_left_arrow(
-                    [t.x[0] for t in traj_arg],
-                    [t.y[0] for t in traj_arg],
-                    [t.x[1] for t in traj],
-                    [t.y[0] for t in traj],
+                    [x[0] for x in traj_arg["x"]],
+                    [y[0] for y in traj["y"]],
+                    [x[1] for x in traj["x"]],
+                    [y[0] for y in traj["y"]],
                 )
                 continue
 
-            yield svg.Rect(
-                height=0.8,
-                fill="blue",
-                elements=[
-                    animate_bbox("x", traj),
-                    animate_bbox("y", traj),
-                    animate_bbox("width", traj),
-                    animate("opacity", fade),
-                ],
-            )
-
     def _repr_html_(self):
-        return self.display().as_str()
+        return self._display(None).as_str()
 
-    def display(self, last: Optional["Term"] = None):
+    def _display(self, last: Optional["Term"] = None):
         return svg.SVG(
             xmlns="http://www.w3.org/2000/svg",
             viewBox="-10 0 20 10",  # type: ignore
@@ -391,39 +452,16 @@ class Term:
         )
 
 
-def animate_bbox(name: str, bboxes: list, duration: int = 2, pad=0.1) -> svg.Element:
-    """Create animation for a bounding box attribute (x, y, width, or height)"""
-    bbox0, bbox1 = bboxes
-
-    if name == "x":
-        values = f"{pad + bbox0.x[0]};{pad + bbox1.x[0]}"
-    elif name == "y":
-        values = f"{pad + bbox0.y[0]};{pad + bbox1.y[0]}"
-    elif name == "width":
-        values = f"{1 - 2 * pad + bbox0.x[1] - bbox0.x[0]};{1 - 2 * pad + bbox1.x[1] - bbox1.x[0]}"
-    elif name == "height":
-        values = f"{1 - 2 * pad + bbox0.y[1] - bbox0.y[0]};{1 - 2 * pad + bbox1.y[1] - bbox1.y[0]}"
-    else:
-        raise ValueError(f"Unknown attribute: {name}")
-
+def animate(name, values, duration=4):
     return svg.Animate(
         attributeName=name,
-        values=values,
+        values=";".join(str(v) for v in values),
         dur=timedelta(seconds=duration),
         repeatCount="indefinite",
     )
 
 
-def animate(name, values, duration=2):
-    return svg.Animate(
-        attributeName=name,
-        values=f"{values[0]}; {values[1]}",
-        dur=timedelta(seconds=duration),
-        repeatCount="indefinite",
-    )
-
-
-def svg_left_arrow(x0_traj, y0_traj, x1_traj, y1_traj, s=0.1):
+def svg_left_arrow(x0_traj, y0_traj, x1_traj, y1_traj, s=0.1, duration=4):
     line = svg.Line(
         stroke="black",
         stroke_width=0.05,
@@ -450,7 +488,16 @@ def svg_left_arrow(x0_traj, y0_traj, x1_traj, y1_traj, s=0.1):
         attributeName="transform",
         type="translate",
         values=" ; ".join([f"{x},{y}" for (x, y) in zip(x1_traj, y1_traj)]),
-        dur=timedelta(seconds=2),
+        dur=timedelta(seconds=duration),
         repeatCount="indefinite",
     )
     return svg.G(elements=[line, triangle, transform])
+
+
+class LambdaAnimation:
+    def __init__(self, src: Term, target: Term):
+        self.src = src
+        self.target = target
+
+    def _repr_html_(self):
+        return self.target._display(self.src).as_str()
