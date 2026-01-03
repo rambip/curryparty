@@ -7,7 +7,7 @@ with app.setup:
     import marimo as mo
     import polars as pl
 
-    from lambda_calc_py.dataframe import Term, L, V
+    from lambda_calc_py import L, V
 
 
 @app.cell
@@ -32,6 +32,7 @@ def _():
             V("n").call("f").call("x")
         )
     ).build()
+    s
     return (s,)
 
 
@@ -43,7 +44,7 @@ def _(zero):
 
 @app.cell
 def _(omega):
-    omega(omega)
+    omega(omega).show_reduction()
     return
 
 
@@ -57,32 +58,39 @@ def _(s, zero):
 @app.cell
 def _(t):
     step1, _ = t._beta()
-    step1
+    step1.show_reduction()
     return (step1,)
 
 
 @app.cell
 def _(step1):
     step2, _ = step1._beta()
-    step2
-    return (step2,)
+    step2._beta()[0].summary()
+    return
 
 
 @app.cell
-def _(step1, step2):
-    mo.Html(step2.display(step1).as_str())
+def _(t):
+    t.show_reduction()
     return
 
 
 @app.cell
 def _(omega, zero):
-    omega(zero)
+    omega(zero).show_reduction()
     return
 
 
 @app.cell
 def _(omega, zero):
-    omega(zero)._beta()
+    x = omega(zero)
+    out = x._beta()[0]
+    out
+    return
+
+
+@app.cell
+def _():
     return
 
 
