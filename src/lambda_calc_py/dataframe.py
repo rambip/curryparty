@@ -11,7 +11,6 @@ SCHEMA = Schema(
         "id": UInt32,
         "ref": UInt32,
         "arg": UInt32,
-        "depth": UInt32,
         "bid": pl.Struct({"major": UInt32, "minor": UInt32}),
     },
 )
@@ -131,23 +130,18 @@ class Term:
         if self.nodes["id"].count() == 0:
             self.nodes = self.nodes.select(pl.exclude("id")).with_row_index("id")
 
-        if self.nodes["depth"].count() == 0:
-            self.nodes = self.with_depth()
-
     def __call__(self, other: "Term") -> "Term":
         n = len(self.nodes)
         nodes = pl.concat(
             [
-                pl.DataFrame([{"id": 0, "depth": 0, "arg": n + 1}], schema=SCHEMA),
+                pl.DataFrame([{"id": 0, "arg": n + 1}], schema=SCHEMA),
                 self.nodes.with_columns(
                     pl.col("id") + 1,
-                    pl.col("depth") + 1,
                     pl.col("ref") + 1,
                     pl.col("arg") + 1,
                 ),
                 other.nodes.with_columns(
                     pl.col("id") + n + 1,
-                    pl.col("depth") + 1,
                     pl.col("ref") + n + 1,
                     pl.col("arg") + n + 1,
                 ),
@@ -156,25 +150,15 @@ class Term:
         )
         return Term(nodes)
 
-    def with_depth(self):
-        d = {0: 0}
-        for row in self.nodes.iter_rows(named=True):
-            if row["arg"] is not None:
-                d[row["arg"]] = d[row["id"]] + 1
-            if row["ref"] is None:
-                d[row["id"] + 1] = d[row["id"]] + 1
-        return self.nodes.with_columns(depth=pl.col("id").replace_strict(d))
-
     def subtree(self, node: int) -> pl.DataFrame:
-        # TODO:
-        # - remove all depth computation
-        # - take while it's a lambda
-        #    - either you reach a variable and you return the subtree
-        #    - either you reach an application and you return the "arg"
-        depth = self.nodes.row(node, named=True)["depth"]
-        return self.nodes.filter(pl.col("id") >= node).filter(
-            pl.col("depth").le(depth).cum_sum().eq(1)
-        )
+        rightmost = node
+        while True:
+            ref = self.nodes["ref"][rightmost]
+            arg = self.nodes["arg"][rightmost]
+            if ref is not None:
+                return self.nodes.filter(pl.col("id").is_between(node, rightmost))
+
+            rightmost = arg if arg is not None else rightmost + 1
 
     def find_redexes(self):
         parents = self.nodes.filter(pl.col("ref").is_null())
@@ -196,20 +180,14 @@ class Term:
             return self, False
         redex, lamb, b = candidates.row(0)
         a = lamb + 1
-        b_depth = self.nodes["depth"][b]
 
         b_subtree = self.subtree(b)
 
         vars = self.nodes.filter(pl.col("ref") == lamb).select(
-            subst_id="id", depth="depth", replaced=pl.lit(True)
+            subst_id="id", replaced=pl.lit(True)
         )
 
-        b_subtree_duplicated = b_subtree.join(
-            vars, how="cross", suffix="_var"
-        ).with_columns(
-            depth=pl.col("depth_var") + (pl.col("depth") - b_depth) - 2,
-        )
-
+        b_subtree_duplicated = b_subtree.join(vars, how="cross", suffix="_var")
         rest_of_nodes = self.nodes.join(b_subtree, on="id", how="anti")
 
         new_nodes = (
@@ -241,7 +219,6 @@ class Term:
                         .otherwise(pl.col("arg").replace(redex, a)),
                     )
                 ),
-                depth="depth",
             )
             .sort("bid")
             .with_row_index("id")
@@ -264,7 +241,7 @@ class Term:
                     right_on="bid",
                     how="left",
                 )
-                .select("id", "ref", "arg", "depth", "bid")
+                .select("id", "ref", "arg", "bid")
                 .sort("id")
             )
         ), True
