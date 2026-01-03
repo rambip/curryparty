@@ -6,6 +6,8 @@ import polars as pl
 import svg
 from polars import Schema, UInt32
 
+__all__ = ["L", "V"]
+
 SCHEMA = Schema(
     {
         "id": UInt32,
@@ -52,16 +54,12 @@ class BBox:
         return BBox(self.x, self.y)
 
 
-def V(name: str) -> "L":
-    return L()._(name)
-
-
 class L:
     def __init__(self, *lambda_names):
         self.n = len(lambda_names)
         self.lambdas = {x: i for (i, x) in enumerate(lambda_names)}
-        self.refs = {}
-        self.args = {}
+        self.refs = []
+        self.args = []
         self.last_ = None
 
     def lamb(self, name: str) -> "L":
@@ -69,84 +67,80 @@ class L:
         self.lambdas[name] = self.n
         return self
 
-    # TODO: rename
-    def foo(self, args: dict, refs: dict, parent_lambdas: dict, offset: int):
-        lambdas = parent_lambdas | self.lambdas
-        for i, x in self.refs.items():
-            if isinstance(x, str) and x in lambdas:
-                refs[offset + i] = lambdas[x]
-            else:
-                refs[offset + i] = x
+    def _append_subtree_or_subexpression(self, t: Union[str, "L"]):
+        if isinstance(t, L):
+            offset = self.n
+            for i, x in t.refs:
+                self.refs.append((offset + i, t.lambdas.get(x, x)))
 
-        for i, x in self.args.items():
-            args[offset + i] = offset + x
+            for i, x in t.args:
+                self.args.append((offset + i, offset + x))
+            self.n += t.n
+        else:
+            self.refs.append((self.n, t))
+            self.n += 1
 
     def _(self, x: Union[str, "L"]) -> "L":
         self.last_ = self.n
-        if isinstance(x, L):
-            x.foo(self.args, self.refs, self.lambdas, self.n)
-            self.n += x.n
-        else:
-            assert isinstance(x, str)
-            self.refs[self.n] = x
-            self.n += 1
+        self._append_subtree_or_subexpression(x)
         return self
 
     def call(self, arg: Union[str, "L"]) -> "L":
         assert self.last_ is not None
-        self.refs = {i + 1 if i >= self.last_ else i: x for (i, x) in self.refs.items()}
-        self.args = {
-            (i + 1 if i >= self.last_ else i): (x + 1 if i >= self.last_ else x)
-            for (i, x) in self.args.items()
-        }
+        self.refs = [(i + 1, x) if i >= self.last_ else (i, x) for (i, x) in self.refs]
+        self.args = [
+            (i + 1, x + 1) if i >= self.last_ else (i, x) for (i, x) in self.args
+        ]
 
         self.n += 1
-        self.args[self.last_] = self.n
-        if isinstance(arg, L):
-            arg.foo(self.args, self.refs, self.lambdas, self.n)
-            self.n += arg.n
-        else:
-            assert isinstance(arg, str), f"{type(arg)}"
-            self.refs[self.n] = arg
-            self.n += 1
+        self.args.append((self.last_, self.n))
+        self._append_subtree_or_subexpression(arg)
 
         return self
 
     def build(self) -> "Term":
-        nodes = [
-            {
-                "id": i,
-                "ref": self.lambdas.get(self.refs.get(i, None), self.refs.get(i, None)),
-                "arg": self.args.get(i, None),
-            }
-            for i in range(self.n)
-        ]
-        return Term(nodes)
+        self.refs = [(i, self.lambdas.get(x, x)) for i, x in self.refs]
+        ref = pl.from_records(
+            self.refs, orient="row", schema={"id": pl.UInt32, "ref": pl.UInt32}
+        )
+        arg = pl.from_records(
+            self.args, orient="row", schema={"id": pl.UInt32, "arg": pl.UInt32}
+        )
+        data = (
+            pl.Series("id", range(self.n), dtype=pl.UInt32)
+            .to_frame()
+            .join(ref, on="id", how="left")
+            .join(arg, on="id", how="left")
+        ).with_columns(bid=pl.struct(major="id", minor="id"))
+        return Term(data)
+
+
+def V(name: str) -> L:
+    return L()._(name)
 
 
 class Term:
     def __init__(self, nodes):
-        self.nodes = pl.DataFrame(nodes, schema=SCHEMA)
-        if self.nodes["id"].count() == 0:
-            self.nodes = self.nodes.select(pl.exclude("id")).with_row_index("id")
+        assert nodes.schema == SCHEMA, (
+            f"{nodes.schema} is different from expected {SCHEMA}"
+        )
+        self.nodes = nodes
+
+    def _shift(self, offset=1):
+        return self.nodes.with_columns(
+            pl.col("id") + offset,
+            pl.col("ref") + offset,
+            pl.col("arg") + offset,
+        )
 
     def __call__(self, other: "Term") -> "Term":
         n = len(self.nodes)
         nodes = pl.concat(
             [
                 pl.DataFrame([{"id": 0, "arg": n + 1}], schema=SCHEMA),
-                self.nodes.with_columns(
-                    pl.col("id") + 1,
-                    pl.col("ref") + 1,
-                    pl.col("arg") + 1,
-                ),
-                other.nodes.with_columns(
-                    pl.col("id") + n + 1,
-                    pl.col("ref") + n + 1,
-                    pl.col("arg") + n + 1,
-                ),
+                self._shift(1),
+                other._shift(n + 1),
             ],
-            how="vertical_relaxed",
         )
         return Term(nodes)
 
