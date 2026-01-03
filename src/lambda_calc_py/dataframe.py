@@ -131,13 +131,17 @@ class Term:
             pl.col("id") + offset,
             pl.col("ref") + offset,
             pl.col("arg") + offset,
+            bid=pl.struct(major=pl.col("id"), minor=pl.col("id")),
         )
 
     def __call__(self, other: "Term") -> "Term":
         n = len(self.nodes)
         nodes = pl.concat(
             [
-                pl.DataFrame([{"id": 0, "arg": n + 1}], schema=SCHEMA),
+                pl.DataFrame(
+                    [{"id": 0, "arg": n + 1}],
+                    schema=SCHEMA,
+                ),
                 self._shift(1),
                 other._shift(n + 1),
             ],
@@ -175,70 +179,59 @@ class Term:
         redex, lamb, b = candidates.row(0)
         a = lamb + 1
 
+        vars = self.nodes.filter(pl.col("ref") == lamb).select("id", replaced=True)
         b_subtree = self.subtree(b)
 
-        vars = self.nodes.filter(pl.col("ref") == lamb).select(
-            subst_id="id", replaced=pl.lit(True)
+        b_subtree_duplicated = b_subtree.join(vars, how="cross", suffix="_major")
+        rest_of_nodes = self.nodes.join(b_subtree, on="id", how="anti").with_columns(
+            arg=pl.col("arg").replace(redex, a)
         )
 
-        b_subtree_duplicated = b_subtree.join(vars, how="cross", suffix="_var")
-        rest_of_nodes = self.nodes.join(b_subtree, on="id", how="anti")
+        def generate_bi_identifier(
+            major_name: str, minor_name: str, minor_replacement=pl.lit(None)
+        ):
+            return pl.struct(
+                major=pl.col(major_name).fill_null(pl.col(minor_name)),
+                minor=minor_replacement.fill_null(pl.col(minor_name)),
+            )
 
         new_nodes = (
             pl.concat(
                 [b_subtree_duplicated, rest_of_nodes],
                 how="diagonal_relaxed",
             )
-            .join(vars, left_on="id", right_on="subst_id", how="anti")
-            .join(vars, left_on="arg", right_on="subst_id", how="left", suffix="_arg")
+            .join(vars, left_on="id", right_on="id", how="anti")
+            .join(vars, left_on="arg", right_on="id", how="left", suffix="_arg")
             .filter(
-                pl.col("id").ne(redex),
-                pl.col("id").ne(lamb),
+                ~pl.col("id").is_between(redex, lamb),
             )
             .select(
-                bid=pl.struct(
-                    major=pl.col("subst_id").fill_null(pl.col("id")), minor=pl.col("id")
-                ),
-                bid_ref=pl.struct(
-                    major=pl.col("subst_id").fill_null(pl.col("ref")),
-                    minor=pl.col("ref"),
-                ),
-                bid_arg=(
-                    pl.struct(
-                        major=pl.col("subst_id").fill_null(
-                            pl.col("arg").replace(redex, a)
-                        ),
-                        minor=pl.when("replaced_arg")
-                        .then(b)
-                        .otherwise(pl.col("arg").replace(redex, a)),
-                    )
+                bid=generate_bi_identifier("id_major", "id"),
+                bid_ref=generate_bi_identifier("id_major", "ref"),
+                bid_arg=generate_bi_identifier(
+                    "id_major", "arg", pl.when("replaced_arg").then(b)
                 ),
             )
             .sort("bid")
             .with_row_index("id")
         )
-        self.new_nodes = new_nodes
 
-        new_ids = new_nodes.select("id", "bid")
-
-        return (
-            Term(
-                new_nodes.join(
-                    new_ids.rename({"id": "ref"}),
-                    left_on="bid_ref",
-                    right_on="bid",
-                    how="left",
-                )
-                .join(
-                    new_ids.rename({"id": "arg"}),
-                    left_on="bid_arg",
-                    right_on="bid",
-                    how="left",
-                )
-                .select("id", "ref", "arg", "bid")
-                .sort("id")
+        out = Term(
+            new_nodes.join(
+                new_nodes.select(bid_ref="bid", ref="id"),
+                on="bid_ref",
+                how="left",
             )
-        ), True
+            .join(
+                new_nodes.select(bid_arg="bid", arg="id"),
+                on="bid_arg",
+                how="left",
+            )
+            .select("id", "ref", "arg", "bid")
+            .sort("id")
+        )
+
+        return out, True
 
     def summary(self):
         try:
