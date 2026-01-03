@@ -120,7 +120,7 @@ def V(name: str) -> L:
 
 
 class Term:
-    def __init__(self, nodes):
+    def __init__(self, nodes: pl.DataFrame):
         assert nodes.schema == SCHEMA, (
             f"{nodes.schema} is different from expected {SCHEMA}"
         )
@@ -251,38 +251,33 @@ class Term:
 
     def compute_bboxes(self) -> dict[int, BBox]:
         result = {0: BBox(None, (0, 0))}
-        for row in self.nodes.iter_rows(named=True):
-            if row["ref"] is not None:
+        for node, ref, arg in self.nodes.select("id", "ref", "arg").iter_rows():
+            if ref is not None:
                 continue
-            parent = row["id"]
-            child = row["id"] + 1
-            arg = row["arg"]
+            child = node + 1
             if arg is not None:
-                result[child] = result[parent].shift_y(
+                result[child] = result[node].shift_y(
                     0 if self.nodes["arg"][child] is None else 1
                 )
-                result[arg] = result[parent].shift_y(0)
+                result[arg] = result[node].shift_y(0)
             else:
-                result[child] = result[parent].shift_y(1)
+                result[child] = result[node].shift_y(1)
 
         next_var = 0
 
-        for row in self.nodes.sort("id", descending=True).iter_rows(named=True):
-            parent = row["id"]
-            ref = row["ref"]
-            arg = row["arg"]
+        for node, ref, arg in (
+            self.nodes.sort("id", descending=True)
+            .select("id", "ref", "arg")
+            .iter_rows()
+        ):
             if ref is not None:
-                result[parent].x = (next_var, next_var)
+                result[node].x = (next_var, next_var)
                 next_var -= 1
-                result[ref] = result[parent] | result.get(ref, BBox(None, None))
+                result[ref] = result[node] | result[ref]
 
             else:
-                child = parent + 1
-                result[parent].x = result[child].x
-                result[parent] = result[child] | result[parent]
-
-                if arg is not None:
-                    result[parent] = result[arg] | result[parent]
+                child = node + 1
+                result[node] = result[child] | result[node]
 
         return result
 
@@ -306,10 +301,12 @@ class Term:
             else:
                 trajectories[id] = [last_bboxes[src_id], bboxes[id]]
 
-        for row in self.nodes.iter_rows(named=True):
-            target_id = row["id"]
-            src_id = row["bid"]["minor"] if row["bid"] else None
-            arg = row["arg"]
+        for target_id, bid, ref, arg in (
+            self.nodes.select("id", "bid", "ref", "arg")
+            .sort("id", descending=True)
+            .iter_rows()
+        ):
+            src_id = bid["minor"] if bid else None
             if target_id is None and last is not None:
                 traj = [bboxes[src_id], bboxes[src_id]]
                 fade = (1, 0)
@@ -317,7 +314,6 @@ class Term:
                 traj = trajectories[target_id]
                 fade = (1, 1)
 
-            ref = row["ref"]
             if ref is not None:
                 yield svg.Rect(
                     width=0.8,
@@ -366,8 +362,8 @@ class Term:
                 traj_arg = trajectories[arg]
                 yield svg_left_arrow(
                     [t.x[0] for t in traj_arg],
-                    [t.x[1] for t in traj],
                     [t.y[0] for t in traj_arg],
+                    [t.x[1] for t in traj],
                     [t.y[0] for t in traj],
                 )
                 continue
@@ -427,7 +423,7 @@ def animate(name, values, duration=2):
     )
 
 
-def svg_left_arrow(x0_traj, x1_traj, y0_traj, y1_traj, s=0.1):
+def svg_left_arrow(x0_traj, y0_traj, x1_traj, y1_traj, s=0.1):
     line = svg.Line(
         stroke="black",
         stroke_width=0.05,
