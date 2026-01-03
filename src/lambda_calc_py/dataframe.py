@@ -70,6 +70,7 @@ class L:
         self.lambdas[name] = self.n
         return self
 
+    # TODO: rename
     def foo(self, args: dict, refs: dict, parent_lambdas: dict, offset: int):
         lambdas = parent_lambdas | self.lambdas
         for i, x in self.refs.items():
@@ -170,7 +171,7 @@ class Term:
         # - take while it's a lambda
         #    - either you reach a variable and you return the subtree
         #    - either you reach an application and you return the "arg"
-        depth = self.nodes.drop_nulls("id").row(node, named=True)["depth"]
+        depth = self.nodes.row(node, named=True)["depth"]
         return self.nodes.filter(pl.col("id") >= node).filter(
             pl.col("depth").le(depth).cum_sum().eq(1)
         )
@@ -190,7 +191,6 @@ class Term:
         )
 
     def _beta(self) -> tuple["Term", bool]:
-        nodes = self.nodes.drop_nulls("id")
         candidates = self.find_redexes()
         if len(candidates) == 0:
             return self, False
@@ -200,7 +200,7 @@ class Term:
 
         b_subtree = self.subtree(b)
 
-        vars = nodes.filter(pl.col("ref") == lamb).select(
+        vars = self.nodes.filter(pl.col("ref") == lamb).select(
             subst_id="id", depth="depth", replaced=pl.lit(True)
         )
 
@@ -210,7 +210,7 @@ class Term:
             depth=pl.col("depth_var") + (pl.col("depth") - b_depth) - 2,
         )
 
-        rest_of_nodes = nodes.join(b_subtree, on="id", how="anti")
+        rest_of_nodes = self.nodes.join(b_subtree, on="id", how="anti")
 
         new_nodes = (
             pl.concat(
