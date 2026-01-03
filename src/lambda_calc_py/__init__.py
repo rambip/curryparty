@@ -264,7 +264,7 @@ class Term:
 
         def rect(is_arg: bool, is_ref: bool):
             stroke_width = 0.05
-            stroke = "black"
+            stroke = "gray"
             if is_arg:
                 stroke_width = 0.1
                 fill = "transparent"
@@ -322,14 +322,31 @@ class Term:
 
             if arg is not None:
                 pass
-                # traj_arg = trajectories[arg]
-                # yield svg_left_arrow(
-                #     [x[0] for x in traj_arg["x"]],
-                #     [y[0] for y in traj["y"]],
-                #     [x[1] for x in traj["x"]],
-                #     [y[0] for y in traj["y"]],
-                # )
-                # continue
+                x_arg = x[arg]
+                y_arg = y[arg]
+                e1 = svg.Line(
+                    stroke="black",
+                    stroke_width=0.05,
+                )
+                e2 = svg.Circle(fill="black", r=0.1)
+                yield (
+                    ("b", target_id),
+                    e1,
+                    {
+                        "x1": 0.5 + x_node[1],
+                        "y1": 0.5 + y_node[0],
+                        "x2": 0.5 + x_arg[0],
+                        "y2": 0.5 + y_arg[0],
+                    },
+                )
+                yield (
+                    ("c", target_id),
+                    e2,
+                    {
+                        "cx": 0.5 + x_node[1],
+                        "cy": 0.5 + y_node[0],
+                    },
+                )
 
     def show_reduction(self):
         final = self._beta()[0]
