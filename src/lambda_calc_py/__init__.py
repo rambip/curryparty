@@ -121,6 +121,7 @@ class Term:
             f"{nodes.schema} is different from expected {SCHEMA}"
         )
         self.nodes = nodes
+        self.lamb = None
 
     def _shift(self, offset=1):
         return self.nodes.with_columns(
@@ -168,15 +169,19 @@ class Term:
             .select(redex="id", lamb="id_child", b="arg")
         )
 
+    def vars(self, lamb):
+        return self.nodes.filter(pl.col("ref") == lamb).select("id", replaced=True)
+
     def _beta(self) -> tuple["Term", bool]:
         candidates = self.find_redexes()
         if len(candidates) == 0:
             return self, False
         redex, lamb, b = candidates.row(0)
+        self.lamb = lamb
         self.b = b
         a = lamb + 1
 
-        vars = self.nodes.filter(pl.col("ref") == lamb).select("id", replaced=True)
+        vars = self.vars(lamb)
         b_subtree = self.subtree(b)
 
         b_subtree_duplicated = b_subtree.join(vars, how="cross", suffix="_major")
@@ -192,7 +197,7 @@ class Term:
                 minor=minor_replacement.fill_null(pl.col(minor_name)),
             )
 
-        new_nodes = (
+        self.new_nodes = (
             pl.concat(
                 [b_subtree_duplicated, rest_of_nodes],
                 how="diagonal_relaxed",
@@ -214,13 +219,13 @@ class Term:
         )
 
         out = Term(
-            new_nodes.join(
-                new_nodes.select(bid_ref="bid", ref="id"),
+            self.new_nodes.join(
+                self.new_nodes.select(bid_ref="bid", ref="id"),
                 on="bid_ref",
                 how="left",
             )
             .join(
-                new_nodes.select(bid_arg="bid", arg="id"),
+                self.new_nodes.select(bid_arg="bid", arg="id"),
                 on="bid_arg",
                 how="left",
             )
@@ -230,10 +235,8 @@ class Term:
 
         return out, True
 
-    def _frame(
-        self, t: int, final: Optional["Term"] = None
-    ) -> Iterable[tuple[Any, svg.Element, dict[str, int]]]:
-        y = {0: Interval((t, t))}
+    def compute_layout(self, replaced_var_width=1):
+        y = {0: Interval((0, 0))}
         x = {}
         for node, ref, arg in self.nodes.select("id", "ref", "arg").iter_rows():
             if ref is not None:
@@ -253,84 +256,85 @@ class Term:
             .iter_rows()
         ):
             if ref is not None:
-                x[node] = Interval((next_var, next_var))
-                next_var -= 1
+                width = replaced_var_width if ref == self.lamb else 1
+                x[node] = Interval((next_var - width + 1, next_var))
+                next_var -= width
                 x[ref] = x[node] | x.get(ref, Interval(None))
 
             else:
                 child = node + 1
                 x[node] = x[child] | x.get(node, Interval(None))
                 y[node] = y[child] | y[node]
+        return x, y
 
-        def rect(is_arg: bool, is_ref: bool):
+    @staticmethod
+    def draw(x, y, i_node, ref, arg, key, replaced=False, removed=False):
+        x_node = x[i_node]
+        y_node = y[i_node]
+        if not removed or replaced:
+            if arg is not None:
+                color = "transparent"
+            elif replaced:
+                color = "green"
+            elif ref is not None:
+                color = "red"
+            else:
+                color = "blue"
+
             stroke_width = 0.05
             stroke = "gray"
-            if is_arg:
+            if arg is not None:
                 stroke_width = 0.1
-                fill = "transparent"
                 stroke = "orange"
-            elif is_ref:
-                fill = "red"
-            else:
-                fill = "blue"
-            return svg.Rect(
-                width=0.8,
+            r = svg.Rect(
                 height=0.8,
-                fill=fill,
                 stroke_width=stroke_width,
                 stroke=stroke,
             )
 
-        for target_id, bid, ref, arg in (
-            self.nodes.select("id", "bid", "ref", "arg")
-            .sort("id", descending=True)
-            .iter_rows()
-        ):
-            x_node = x[target_id]
-            y_node = y[target_id]
-
-            r = rect(arg is not None, ref is not None)
             yield (
-                ("r", target_id),
+                ("r", key),
                 r,
                 {
                     "x": 0.1 + x_node[0],
                     "y": 0.1 + y_node[0],
                     "width": 0.8 + x_node[1] - x_node[0],
                     "fill_opacity": 1 if arg is None else 0,
+                    "fill": color,
                 },
             )
 
-            if ref is not None:
-                x_ref = x[ref]
-                y_ref = y[ref]
-                e = svg.Line(
-                    stroke_width=0.1,
-                    stroke="gray",
-                )
-                yield (
-                    ("l", target_id),
-                    e,
-                    {
-                        "x1": x_node[0] + 0.5,
-                        "y1": y_node[0] + 0.1,
-                        "x2": x_node[0] + 0.5,
-                        "y2": y_ref[0] + 0.9,
-                    },
-                )
-                continue
+        if ref is not None:
+            x_ref = x[ref]
+            y_ref = y[ref]
+            e = svg.Line(
+                stroke_width=0.1,
+                stroke="gray",
+            )
+            yield (
+                ("l", key),
+                e,
+                {
+                    "x1": x_node[0] + 0.5,
+                    "y1": y_node[0] + 0.1,
+                    "x2": x_node[0] + 0.5,
+                    "y2": y_node[0] + 0.9 if replaced else y_ref[0] + 0.9,
+                    "stroke": "green" if replaced else "gray",
+                },
+            )
 
-            if arg is not None:
-                pass
-                x_arg = x[arg]
-                y_arg = y[arg]
-                e1 = svg.Line(
-                    stroke="black",
-                    stroke_width=0.05,
-                )
-                e2 = svg.Circle(fill="black", r=0.1)
+        if arg is not None:
+            x_arg = x[arg]
+            y_arg = y[arg]
+            e1 = svg.Line(
+                stroke="black",
+                stroke_width=0.05,
+            )
+            e2 = svg.Circle(fill="black", r=0.1)
+            if not removed:
+                print(arg, x_arg, y_arg)
                 yield (
-                    ("b", target_id),
+                    ("b", key),
                     e1,
                     {
                         "x1": 0.5 + x_node[1],
@@ -340,7 +344,7 @@ class Term:
                     },
                 )
                 yield (
-                    ("c", target_id),
+                    ("c", key),
                     e2,
                     {
                         "cx": 0.5 + x_node[1],
@@ -348,21 +352,105 @@ class Term:
                     },
                 )
 
-    def show_reduction(self):
-        final = self._beta()[0]
-        shapes: dict[int, ShapeAnim] = {}
-        for t in range(5):
-            for k, e, attributes in self._frame(t, final):
-                if t == 0:
-                    shapes[k] = ShapeAnim(e, attributes.items())
-                else:
-                    shapes[k].append_frame(attributes.items())
+    def _frame(self, t: int) -> Iterable[tuple[Any, svg.Element, dict[str, Any]]]:
+        print(f"time = {t}")
+        redex = self.lamb - 1 if self.lamb is not None else None
 
-        elements = [x.to_element() for x in shapes.values()]
+        if t == 0:
+            x, y = self.compute_layout()
+            for target_id, ref, arg in (
+                self.nodes.select("id", "ref", "arg")
+                .sort("id", descending=True)
+                .iter_rows()
+            ):
+                yield from Term.draw(x, y, target_id, ref, arg, target_id)
+        elif t == 1:
+            b_width = self.subtree(self.b).count()["ref"].item()
+            x, y = self.compute_layout(replaced_var_width=b_width)
+            for target_id, ref, arg in (
+                self.nodes.select("id", "ref", "arg")
+                .sort("id", descending=True)
+                .iter_rows()
+            ):
+                replaced = ref is not None and ref == self.lamb
+                yield from Term.draw(
+                    x,
+                    y,
+                    target_id,
+                    ref,
+                    arg,
+                    target_id,
+                    replaced=replaced,
+                    removed=(target_id == self.lamb or target_id == redex),
+                )
+
+            b_x = x[self.b][0]
+            b_y = y[self.b][0]
+            for v in self.vars(self.lamb)["id"]:
+                for minor, ref, arg in (
+                    self.subtree(self.b)
+                    .select("id", "ref", "arg")
+                    .sort("id", descending=True)
+                    .iter_rows()
+                ):
+                    yield from Term.draw(x, y, minor, ref, arg, key=(v, minor))
+
+        elif t == 2:
+            b_width = self.subtree(self.b).count()["ref"].item()
+            x, y = self.compute_layout(replaced_var_width=b_width)
+            b_x = x[self.b][0]
+            b_y = y[self.b][0]
+            for (v,), nodes in self.new_nodes.group_by(
+                pl.col("bid").struct.field("major")
+            ):
+                if len(nodes) == 1 and nodes["bid"][0]["minor"] == v:
+                    x_v = x
+                    y_v = y
+                else:
+                    delta_x = x[v][0] - b_x
+                    delta_y = y[v][0] - b_y
+                    x_v = {k: v.shift(delta_x) for (k, v) in x.items()}
+                    y_v = {k: v.shift(delta_y) for (k, v) in y.items()}
+
+                for bid, bid_ref, bid_arg in nodes.select(
+                    "bid", "bid_ref", "bid_arg"
+                ).iter_rows():
+                    minor = bid["minor"]
+                    ref = bid_ref["minor"]
+                    arg = bid_arg["minor"]
+                    if arg == self.b:
+                        arg = bid_arg["major"]
+                    key = (v, minor) if minor != v else minor
+                    yield from Term.draw(x_v, y_v, minor, ref, arg, key=key)
+
+        else:
+            reduced = self._beta()[0]
+            x, y = reduced.compute_layout()
+            for target_id, bid, ref, arg in (
+                reduced.nodes.select("id", "bid", "ref", "arg")
+                .sort("id", descending=True)
+                .iter_rows()
+            ):
+                minor = bid["minor"]
+                major = bid["major"]
+                key = (major, minor) if minor != major else minor
+                yield from Term.draw(x, y, target_id, ref, arg, key)
+
+    def show_reduction(self):
+        self._beta()
+        shapes: dict[int, ShapeAnim] = {}
+        N_STEPS = 5
+        for t in range(N_STEPS):
+            for k, e, attributes in self._frame(t):
+                if k not in shapes:
+                    shapes[k] = ShapeAnim(e)
+                shapes[k].append_frame(t, attributes.items())
+
+        elements = [x.to_element(N_STEPS) for x in shapes.values()]
         return Html(
             svg.SVG(
                 xmlns="http://www.w3.org/2000/svg",
-                viewBox="-10 0 20 10",  # type: ignore
+                viewBox="-20 0 25 15",  # type: ignore
                 height="400px",  # type: ignore
                 elements=elements,
             ).as_str()
@@ -377,7 +465,7 @@ class Term:
             elements.append(e)
         return svg.SVG(
             xmlns="http://www.w3.org/2000/svg",
-            viewBox="-10 0 20 10",  # type: ignore
+            viewBox="-20 0 25 15",  # type: ignore
             height="400px",  # type: ignore
             elements=elements,
         ).as_str()
@@ -394,26 +482,61 @@ class Html:
 @dataclass
 class ShapeAnim:
     shape: svg.Element
-    attributes: dict[str, list]
+    attributes: set[str]
+    values: dict[tuple[int, str], Any]
+    n: int
+    duration: int
 
-    def __init__(self, shape: svg.Element, attributes: Iterable[tuple[str, float]]):
+    def __init__(
+        self,
+        shape: svg.Element,
+        duration: int = 5,
+    ):
         self.shape = shape
-        self.attributes = {}
-        for name, v in attributes:
-            self.attributes[name] = [v]
+        self.attributes = set()
+        self.values = {}
+        self.duration = duration
 
-    def append_frame(self, attributes: Iterable[tuple[str, float]]):
+    def append_frame(self, i: int, attributes: Iterable[tuple[str, Any]]):
         for name, v in attributes:
-            self.attributes[name].append(v)
+            self.attributes.add(name)
+            self.values[i, name] = v
 
-    def to_element(self):
-        self.shape.elements = [
+    def to_element(self, n: int):
+        elements = []
+
+        visible = [
+            all((i, name) in self.values for name in self.attributes) for i in range(n)
+        ]
+
+        for name in self.attributes:
+            non_nulls = [
+                self.values[i, name] for i in range(n) if (i, name) in self.values
+            ]
+            for i in reversed(range(n)):
+                if (i, name) in self.values:
+                    break
+                self.values[i, name] = non_nulls[-1]
+            for i in range(n):
+                if (i, name) not in self.values:
+                    self.values[i, name] = non_nulls[0]
+            elements.append(
+                svg.Animate(
+                    attributeName=name,
+                    values=";".join(str(self.values[i, name]) for i in range(n)),
+                    dur=timedelta(seconds=self.duration),
+                    repeatCount="indefinite",
+                )
+            )
+        elements.append(
             svg.Animate(
-                attributeName=name,
-                values=";".join(str(v) for v in values),
-                dur=timedelta(seconds=4),
+                attributeName="opacity",
+                values=";".join("1" if v else "0" for v in visible),
+                dur=timedelta(seconds=self.duration),
                 repeatCount="indefinite",
             )
-            for name, values in self.attributes.items()
-        ]
+        )
+
+        assert not self.shape.elements
+        self.shape.elements = elements
         return self.shape

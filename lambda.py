@@ -37,14 +37,28 @@ def _():
 
 
 @app.cell
-def _(zero):
-    zero
+def _(omega):
+    omega(omega).show_reduction()
+    return
+
+
+@app.cell
+def _(x0):
+    x0.show_reduction()
+    return
+
+
+@app.cell
+def _(x0):
+    for ((v,), nodes) in x0.new_nodes.group_by(pl.col("bid").struct.field("major")):
+        print(nodes)
+    x0.b
     return
 
 
 @app.cell
 def _(omega):
-    omega(omega).show_reduction()
+    omega(omega).show_reduction().content
     return
 
 
@@ -65,14 +79,22 @@ def _(t):
 @app.cell
 def _(step1):
     step2, _ = step1._beta()
-    step2._beta()[0].summary()
+    step2
     return
 
 
 @app.cell
-def _(t):
-    t.show_reduction()
+def _(omega):
+    omega(omega).show_reduction()
     return
+
+
+@app.cell
+def _(omega, zero):
+    x0 = omega(zero)
+    x0._beta()
+    x0.new_nodes
+    return (x0,)
 
 
 @app.cell
