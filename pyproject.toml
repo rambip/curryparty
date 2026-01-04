@@ -1,7 +1,7 @@
 [project]
-name = "lambda-calc-py"
+name = "curryparty"
 version = "0.1.0"
-description = "Add your description here"
+description = "Python playground to learn lambda calculus"
 readme = "README.md"
 authors = [
     { name = "Antonin P", email = "antonin.peronnet@telecom-paris.fr" }
