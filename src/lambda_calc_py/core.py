@@ -1,5 +1,6 @@
 import polars as pl
 from polars import Schema, UInt32
+from polars.functions.lazy import coalesce
 
 SCHEMA = Schema(
     {
@@ -62,6 +63,15 @@ def subtree(nodes: pl.DataFrame, root: int) -> pl.DataFrame:
         rightmost = arg if arg is not None else rightmost + 1
 
 
+def _generate_bi_identifier(
+    major_name: str, minor_name: str, minor_replacement=pl.lit(None)
+):
+    return pl.struct(
+        major=pl.col(major_name).fill_null(pl.col(minor_name)),
+        minor=minor_replacement.fill_null(pl.col(minor_name)),
+    )
+
+
 def beta_reduce(nodes: pl.DataFrame, lamb: int, b: int) -> pl.DataFrame:
     redex = lamb - 1
     a = lamb + 1
@@ -74,14 +84,6 @@ def beta_reduce(nodes: pl.DataFrame, lamb: int, b: int) -> pl.DataFrame:
         arg=pl.col("arg").replace(redex, a)
     )
 
-    def generate_bi_identifier(
-        major_name: str, minor_name: str, minor_replacement=pl.lit(None)
-    ):
-        return pl.struct(
-            major=pl.col(major_name).fill_null(pl.col(minor_name)),
-            minor=minor_replacement.fill_null(pl.col(minor_name)),
-        )
-
     new_nodes = (
         pl.concat(
             [b_subtree_duplicated, rest_of_nodes],
@@ -89,14 +91,16 @@ def beta_reduce(nodes: pl.DataFrame, lamb: int, b: int) -> pl.DataFrame:
         )
         .join(vars, left_on="id", right_on="id", how="anti")
         .join(vars, left_on="arg", right_on="id", how="left", suffix="_arg")
+        .join(vars, left_on="ref", right_on="id", how="left", suffix="_ref")
         .filter(
             ~pl.col("id").is_between(redex, lamb),
         )
         .select(
-            bid=generate_bi_identifier("id_major", "id"),
-            bid_ref=generate_bi_identifier("id_major", "ref"),
-            bid_arg=generate_bi_identifier(
-                "id_major", "arg", pl.when("replaced_arg").then(b)
+            bid=_generate_bi_identifier("id_major", "id"),
+            bid_ref=_generate_bi_identifier("id_major", "ref"),
+            bid_ref_fallback=pl.struct(major="ref", minor="ref"),
+            bid_arg=_generate_bi_identifier(
+                "id_major", "arg", minor_replacement=pl.when("replaced_arg").then(b)
             ),
         )
         .sort("bid")
@@ -110,10 +114,15 @@ def beta_reduce(nodes: pl.DataFrame, lamb: int, b: int) -> pl.DataFrame:
             how="left",
         )
         .join(
+            new_nodes.select(bid_ref_fallback="bid", ref_fallback="id"),
+            on="bid_ref_fallback",
+            how="left",
+        )
+        .join(
             new_nodes.select(bid_arg="bid", arg="id"),
             on="bid_arg",
             how="left",
         )
-        .select("id", "ref", "arg", "bid")
+        .select("id", ref=pl.coalesce("ref", "ref_fallback"), arg="arg", bid="bid")
         .sort("id")
     )
