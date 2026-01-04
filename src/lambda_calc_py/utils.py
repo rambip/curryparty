@@ -44,7 +44,7 @@ class ShapeAnim:
     def __init__(
         self,
         shape: Element,
-        duration: int = 5,
+        duration: int = 7,
     ):
         self.shape = shape
         self.attributes = set()

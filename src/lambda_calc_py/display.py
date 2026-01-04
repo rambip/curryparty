@@ -21,15 +21,15 @@ def compute_layout(
         else:
             y[child] = y[node].shift(1)
 
-    next_var = 0
+    next_var_x = nodes.select(pl.col("ref").count()).item()
 
     for node, ref, arg in (
         nodes.sort("id", descending=True).select("id", "ref", "arg").iter_rows()
     ):
         if ref is not None:
             width = replaced_var_width if ref == lamb else 1
-            x[node] = Interval((next_var - width + 1, next_var))
-            next_var -= width
+            x[node] = Interval((next_var_x - width + 1, next_var_x))
+            next_var_x -= width
             x[ref] = x[node] | x.get(ref, Interval(None))
 
         else:
@@ -131,7 +131,7 @@ def draw(
             )
 
 
-def compute_svg_frame_phase_0(
+def compute_svg_frame_init(
     nodes: pl.DataFrame,
 ) -> Iterable[tuple[Any, svg.Element, dict[str, Any]]]:
     x, y = compute_layout(nodes)
@@ -141,7 +141,7 @@ def compute_svg_frame_phase_0(
         yield from draw(x, y, target_id, ref, arg, target_id)
 
 
-def compute_svg_frame_phase_1(
+def compute_svg_frame_phase_a(
     nodes: pl.DataFrame,
     lamb: int,
     b_subtree: pl.DataFrame,
@@ -172,7 +172,7 @@ def compute_svg_frame_phase_1(
             yield from draw(x, y, minor, ref, arg, key=(v, minor))
 
 
-def compute_svg_frame_phase_2(
+def compute_svg_frame_phase_b(
     nodes: pl.DataFrame,
     lamb: int,
     b_subtree: pl.DataFrame,
@@ -219,7 +219,7 @@ def compute_svg_frame_phase_2(
         yield from draw(x, y, key, ref, arg, key=key)
 
 
-def compute_svg_frame_phase_3(reduced: pl.DataFrame):
+def compute_svg_frame_final(reduced: pl.DataFrame):
     x, y = compute_layout(reduced)
     for target_id, bid, ref, arg in (
         reduced.select("id", "bid", "ref", "arg")

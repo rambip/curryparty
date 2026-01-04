@@ -5,10 +5,10 @@ from svg import SVG
 
 from .core import SCHEMA, beta_reduce, compose, find_redexes, find_variables, subtree
 from .display import (
-    compute_svg_frame_phase_0,
-    compute_svg_frame_phase_1,
-    compute_svg_frame_phase_2,
-    compute_svg_frame_phase_3,
+    compute_svg_frame_final,
+    compute_svg_frame_init,
+    compute_svg_frame_phase_a,
+    compute_svg_frame_phase_b,
 )
 from .utils import ShapeAnim
 
@@ -53,45 +53,47 @@ class Term:
         vars = find_variables(self.nodes, lamb)["id"]
         b_subtree = subtree(self.nodes, b)
         shapes: dict[int, ShapeAnim] = {}
-        N_STEPS = 4
+        N_STEPS = 8
 
         for t in range(N_STEPS):
-            if t == 0:
-                items = compute_svg_frame_phase_0(self.nodes)
-            elif t == 1:
-                items = compute_svg_frame_phase_1(self.nodes, lamb, b_subtree, vars)
-            elif t == 2:
-                items = compute_svg_frame_phase_2(
+            if t < 2:
+                items = compute_svg_frame_init(self.nodes)
+            elif t == 2 or t == 3:
+                items = compute_svg_frame_phase_a(self.nodes, lamb, b_subtree, vars)
+            elif t == 4 or t == 5:
+                items = compute_svg_frame_phase_b(
                     self.nodes, lamb, b_subtree, new_nodes
                 )
             else:
-                items = compute_svg_frame_phase_3(new_nodes)
+                items = compute_svg_frame_final(new_nodes)
             for k, e, attributes in items:
                 if k not in shapes:
                     shapes[k] = ShapeAnim(e)
                 shapes[k].append_frame(t, attributes.items())
 
         elements = [x.to_element(N_STEPS) for x in shapes.values()]
+        height = 2 + int(0.6 * len(self.nodes))
         return Html(
             SVG(
                 xmlns="http://www.w3.org/2000/svg",
-                viewBox="-20 0 25 15",  # type: ignore
-                height="400px",  # type: ignore
+                viewBox=f"-10 0 30 {height}",  # type: ignore
+                height=f"{35 * height}px",  # type: ignore
                 elements=elements,
             ).as_str()
         )
 
     def _repr_html_(self):
-        frame = compute_svg_frame_phase_0(self.nodes)
+        frame = compute_svg_frame_init(self.nodes)
         elements = []
+        height = 2 + int(0.6 * len(self.nodes))
         for _, e, attributes in frame:
             for name, v in attributes.items():
                 e.__setattr__(name, v)
             elements.append(e)
         return SVG(
             xmlns="http://www.w3.org/2000/svg",
-            viewBox="-20 0 25 15",  # type: ignore
-            height="400px",  # type: ignore
+            viewBox=f"-10 0 30 {height}",  # type: ignore
+            height=f"{35 * height}px",  # type: ignore
             elements=elements,
         ).as_str()
 
