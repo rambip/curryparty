@@ -45,7 +45,10 @@ class Term:
                 break
 
     def show_reduction(self):
-        _redex, lamb, b = find_redexes(self.nodes).row(0)
+        candidates = find_redexes(self.nodes)
+        if len(candidates) == 0:
+            return None
+        _redex, lamb, b = candidates.row(0)
         new_nodes = beta_reduce(self.nodes, lamb, b)
         vars = find_variables(self.nodes, lamb)["id"]
         b_subtree = subtree(self.nodes, b)
