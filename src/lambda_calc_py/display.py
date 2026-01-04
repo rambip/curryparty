@@ -1,4 +1,4 @@
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Union
 
 import polars as pl
 import svg
@@ -6,10 +6,43 @@ import svg
 from .utils import Interval
 
 
+def compute_layout(
+    nodes: pl.DataFrame, lamb=None, replaced_var_width=1
+) -> tuple[dict[int, int], dict[int, int]]:
+    y = {0: Interval((0, 0))}
+    x = {}
+    for node, ref, arg in nodes.select("id", "ref", "arg").iter_rows():
+        if ref is not None:
+            continue
+        child = node + 1
+        if arg is not None:
+            y[child] = y[node].shift(0 if nodes["arg"][child] is None else 1)
+            y[arg] = y[node].shift(0)
+        else:
+            y[child] = y[node].shift(1)
+
+    next_var = 0
+
+    for node, ref, arg in (
+        nodes.sort("id", descending=True).select("id", "ref", "arg").iter_rows()
+    ):
+        if ref is not None:
+            width = replaced_var_width if ref == lamb else 1
+            x[node] = Interval((next_var - width + 1, next_var))
+            next_var -= width
+            x[ref] = x[node] | x.get(ref, Interval(None))
+
+        else:
+            child = node + 1
+            x[node] = x[child] | x.get(node, Interval(None))
+            y[node] = y[child] | y[node]
+    return x, y
+
+
 def draw(
-    x: dict[int, Interval],
-    y: dict[int, Interval],
-    i_node: int,
+    x: dict[Union[int, tuple[int, int]], Interval],
+    y: dict[Union[int, tuple[int, int]], Interval],
+    i_node: Union[int, tuple[int, int]],
     ref: Optional[int],
     arg: Optional[int],
     key: Any,
@@ -18,10 +51,10 @@ def draw(
 ) -> Iterable[tuple[Any, svg.Element, dict]]:
     x_node = x[i_node]
     y_node = y[i_node]
-    if not removed or replaced:
-        if arg is not None:
+    if True:
+        if arg is not None or removed:
             color = "transparent"
-        elif replaced:
+        elif replaced or removed:
             color = "green"
         elif ref is not None:
             color = "red"
@@ -54,7 +87,7 @@ def draw(
     if ref is not None:
         y_ref = y[ref]
         e = svg.Line(
-            stroke_width=0.1,
+            stroke_width=0.2,
             stroke="gray",
         )
         yield (
@@ -64,7 +97,7 @@ def draw(
                 "x1": x_node[0] + 0.5,
                 "y1": y_node[0] + 0.1,
                 "x2": x_node[0] + 0.5,
-                "y2": y_node[0] + 0.9 if replaced else y_ref[0] + 0.9,
+                "y2": y_ref[0] + 0.9,
                 "stroke": "green" if replaced else "gray",
             },
         )
@@ -96,37 +129,6 @@ def draw(
                     "cy": 0.5 + y_node[0],
                 },
             )
-
-
-def compute_layout(nodes: pl.DataFrame, lamb=None, replaced_var_width=1):
-    y = {0: Interval((0, 0))}
-    x = {}
-    for node, ref, arg in nodes.select("id", "ref", "arg").iter_rows():
-        if ref is not None:
-            continue
-        child = node + 1
-        if arg is not None:
-            y[child] = y[node].shift(0 if nodes["arg"][child] is None else 1)
-            y[arg] = y[node].shift(0)
-        else:
-            y[child] = y[node].shift(1)
-
-    next_var = 0
-
-    for node, ref, arg in (
-        nodes.sort("id", descending=True).select("id", "ref", "arg").iter_rows()
-    ):
-        if ref is not None:
-            width = replaced_var_width if ref == lamb else 1
-            x[node] = Interval((next_var - width + 1, next_var))
-            next_var -= width
-            x[ref] = x[node] | x.get(ref, Interval(None))
-
-        else:
-            child = node + 1
-            x[node] = x[child] | x.get(node, Interval(None))
-            y[node] = y[child] | y[node]
-    return x, y
 
 
 def compute_svg_frame_phase_0(
@@ -181,24 +183,40 @@ def compute_svg_frame_phase_2(
     x, y = compute_layout(nodes, lamb=lamb, replaced_var_width=b_width)
     b_x = x[b][0]
     b_y = y[b][0]
-    for (v,), nodes in new_nodes.group_by(pl.col("bid").struct.field("major")):
-        if len(nodes) == 1 and nodes["bid"][0]["minor"] == v:
-            x_v = x
-            y_v = y
-        else:
+    for bid, arg in new_nodes.select("bid", "arg").iter_rows():
+        if bid["minor"] != bid["major"]:
+            v = bid["major"]
+            minor = bid["minor"]
             delta_x = x[v][0] - b_x
             delta_y = y[v][0] - b_y
-            x_v = {k: v.shift(delta_x) for (k, v) in x.items()}
-            y_v = {k: v.shift(delta_y) for (k, v) in y.items()}
+            x[(v, minor)] = x[minor].shift(delta_x)
+            y[(v, minor)] = y[minor].shift(delta_y)
 
-        for bid, new_ref, new_arg in nodes.select("bid", "ref", "arg").iter_rows():
-            minor = bid["minor"]
-            ref = new_nodes["bid"][new_ref]["minor"] if new_ref else None
-            arg = new_nodes["bid"][new_arg]["minor"] if new_arg else None
-            if arg == b:
-                arg = new_nodes["bid"][new_arg]["major"]
-            key = (v, minor) if minor != v else minor
-            yield from draw(x_v, y_v, minor, ref, arg, key=key)
+    for bid, new_ref, new_arg in new_nodes.select("bid", "ref", "arg").iter_rows():
+        v = bid["major"]
+        minor = bid["minor"]
+        if new_ref is None:
+            ref = None
+        else:
+            bid_ref = new_nodes["bid"][new_ref]
+            ref = (
+                (bid_ref["major"], bid_ref["minor"])
+                if bid_ref["major"] != bid_ref["minor"]
+                else bid_ref["minor"]
+            )
+        if new_arg is None:
+            arg = None
+        else:
+            bid_arg = new_nodes["bid"][new_arg]
+            arg = (
+                (bid_arg["major"], bid_arg["minor"])
+                if bid_arg["major"] != bid_arg["minor"]
+                else bid_arg["minor"]
+            )
+            if bid_arg["minor"] == b:
+                arg = bid_arg["major"]
+        key = (v, minor) if minor != v else minor
+        yield from draw(x, y, key, ref, arg, key=key)
 
 
 def compute_svg_frame_phase_3(reduced: pl.DataFrame):
