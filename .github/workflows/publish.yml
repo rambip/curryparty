@@ -16,7 +16,7 @@ jobs:
       - name: Store the distribution packages
         uses: actions/upload-artifact@v5
         with:
-          name: python-package-wheel
+          name: package-wheel
           path: dist/
   pypi-publish:
     name: Upload release to PyPI
