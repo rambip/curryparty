@@ -46,7 +46,8 @@ for x in term.reduction_chain():
 But the main point of this library is the svg-based display system.
 If you use a notebook such as jupyternotebook or marimo, you will see something like this:
 
-![](./assets/notebook_display.png)
+<img width="1140" height="440" alt="notebook_display" src="https://github.com/user-attachments/assets/6ac48738-eb58-4f7c-908f-567a855f37f5" />
+
 
 
 You can also use `term.show_reduction` to get an animated version.
