@@ -7,7 +7,7 @@ with app.setup:
     import marimo as mo
     import polars as pl
 
-    from lambda_calc_py import L, V
+    from curryparty import L, V
 
 
 @app.cell
@@ -24,14 +24,14 @@ def _(zero):
 
 
 @app.cell
+def _(omega):
+    omega
+    return
+
+
+@app.cell
 def _():
-    s = (
-        L("n", "f", "x")
-        ._("f")
-        .call(
-            V("n").call("f").call("x")
-        )
-    ).build()
+    s = (L("n", "f", "x")._("f").call(V("n").call("f").call("x"))).build()
     s
     return (s,)
 
@@ -49,14 +49,6 @@ def _(x0):
 
 
 @app.cell
-def _(x0):
-    for ((v,), nodes) in x0.new_nodes.group_by(pl.col("bid").struct.field("major")):
-        print(nodes)
-    x0.b
-    return
-
-
-@app.cell
 def _(omega):
     omega(omega).show_reduction().content
     return
@@ -64,22 +56,19 @@ def _(omega):
 
 @app.cell
 def _(s, zero):
-    t = s(zero)
-    t
-    return (t,)
+    mo.vstack([x.show_reduction() for x in s(s(s(zero))).reduction_chain()])
+    return
 
 
 @app.cell
-def _(t):
-    step1, _ = t._beta()
-    step1.show_reduction()
-    return (step1,)
+def _(s, zero):
+    s(zero).beta().beta()
+    return
 
 
 @app.cell
-def _(step1):
-    step2, _ = step1._beta()
-    step2
+def _(s, zero):
+    s(zero).beta().beta().beta()
     return
 
 
@@ -92,8 +81,7 @@ def _(omega):
 @app.cell
 def _(omega, zero):
     x0 = omega(zero)
-    x0._beta()
-    x0.new_nodes
+    x0.beta()
     return (x0,)
 
 
@@ -106,7 +94,7 @@ def _(omega, zero):
 @app.cell
 def _(omega, zero):
     x = omega(zero)
-    out = x._beta()[0]
+    out = x.beta()
     out
     return
 
