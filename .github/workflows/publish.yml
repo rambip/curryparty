@@ -13,6 +13,11 @@ jobs:
 
       - name: Build project
         run: uv build
+      - name: Store the distribution packages
+        uses: actions/upload-artifact@v5
+        with:
+          name: python-package-wheel
+          path: dist/
   pypi-publish:
     name: Upload release to PyPI
     if: startsWith(github.ref, 'refs/tags/')
@@ -24,7 +29,10 @@ jobs:
     permissions:
       id-token: write # IMPORTANT: this permission is mandatory for trusted publishing
     steps:
-      # retrieve your distributions here
+      - uses: actions/download-artifact@v6
+        with:
+          name: package-wheel
+          path: dist/
 
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
