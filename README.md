@@ -52,6 +52,12 @@ If you use a notebook such as jupyternotebook or marimo, you will see something 
 
 You can also use `term.show_reduction` to get an animated version.
 
+# Tutorial
+
+`lambda.py` shows a tutorial in marimo format. Click on the button to try it out:
+
+[![Open with marimo](https://marimo.io/shield.svg)](https://marimo.app/github.com/rambip/curryparty/blob/main/lambda.py)
+
 # How it works
 
 Under the wood, all the terms are converted into a list of nodes, that can either be a `lambda`, an `application` (with 2 arguments) or a `variable` (with 0 arguments).
