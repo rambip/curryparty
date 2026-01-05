@@ -1,6 +1,11 @@
 from typing import Iterable, List, Optional, Union
 
-import polars as pl
+try:
+    import polars as pl
+except ImportError:
+    raise ImportError(
+        "curryparty needs the `polars` library. \n Please install it, typically with `pip install polars`"
+    )
 from svg import SVG
 
 from .core import SCHEMA, beta_reduce, compose, find_redexes, find_variables, subtree

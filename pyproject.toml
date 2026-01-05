@@ -1,6 +1,6 @@
 [project]
 name = "curryparty"
-version = "0.1.0"
+version = "0.1.1"
 description = "Python playground to learn lambda calculus"
 readme = "README.md"
 authors = [
@@ -8,7 +8,6 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "polars>=1.36.1",
     "svg-py>=1.9.2",
 ]
 
@@ -19,5 +18,6 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "marimo>=0.18.4",
+    "polars>=1.36.1",
     "ruff>=0.14.8",
 ]
