@@ -38,25 +38,25 @@ def _():
 
 @app.cell
 def _(omega):
-    omega(omega).show_reduction()
+    omega(omega).show_beta()
     return
 
 
 @app.cell
 def _(x0):
-    x0.show_reduction()
+    x0.reduce()
     return
 
 
 @app.cell
 def _(omega):
-    omega(omega).show_reduction().content
+    omega(omega).show_beta().content
     return
 
 
 @app.cell
 def _(s, zero):
-    mo.vstack([x.show_reduction() for x in s(s(s(zero))).reduction_chain()])
+    mo.vstack([x.show_beta() for x in s(s(s(zero))).reduction_chain()])
     return
 
 
@@ -74,7 +74,7 @@ def _(s, zero):
 
 @app.cell
 def _(omega):
-    omega(omega).show_reduction()
+    omega(omega).show_beta()
     return
 
 
@@ -87,7 +87,7 @@ def _(omega, zero):
 
 @app.cell
 def _(omega, zero):
-    omega(zero).show_reduction()
+    omega(zero).show_beta()
     return
 
 

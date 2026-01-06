@@ -41,6 +41,12 @@ class Term:
         reduced = beta_reduce(self.nodes, lamb, b)
         return Term(reduced)
 
+    def reduce(self):
+        last_non_reduced = self
+        for term in self.reduction_chain():
+            last_non_reduced = term
+        return last_non_reduced
+
     def reduction_chain(self) -> Iterable["Term"]:
         term = self
         while True:
@@ -49,7 +55,7 @@ class Term:
             if term is None:
                 break
 
-    def show_reduction(self):
+    def show_beta(self):
         candidates = find_redexes(self.nodes)
         if len(candidates) == 0:
             return None
