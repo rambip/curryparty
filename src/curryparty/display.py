@@ -38,6 +38,10 @@ def compute_layout(
             y[node] = y[child] | y[node]
     return x, y
 
+def compute_height(nodes: pl.DataFrame):
+    _, y = compute_layout(nodes)
+    return max(interval[1] for interval in y.values() if interval)
+
 
 def draw(
     x: dict[Union[int, tuple[int, int]], Interval],

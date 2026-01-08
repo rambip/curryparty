@@ -11,6 +11,7 @@ import uuid
 
 from .core import SCHEMA, beta_reduce, compose, find_redexes, find_variables, subtree
 from .display import (
+    compute_height,
     compute_svg_frame_final,
     compute_svg_frame_init,
     compute_svg_frame_phase_a,
@@ -69,6 +70,7 @@ class Term:
         new_nodes = beta_reduce(self.nodes, lamb, b)
         vars = find_variables(self.nodes, lamb)["id"]
         b_subtree = subtree(self.nodes, b)
+        height = compute_height(self.nodes) + 3
         shapes: dict[int, ShapeAnim] = {}
         N_STEPS = 6
 
@@ -94,7 +96,6 @@ class Term:
             x.to_element(N_STEPS, begin=f"{box_id}.click", reset=f"{box_id}.mouseover")
             for x in shapes.values()
         ]
-        height = 2 + int(0.6 * len(self.nodes))
 
         anim_elements.append(
             Rect(
@@ -115,13 +116,14 @@ class Term:
         ).as_str()
 
         return Html(
-            f"<div><div>click to animate, move away and back to reset</div>{anim_svg}</div>"
+            f"<div><div style=\"margin:5px\">click to animate, move away and back to reset</div>{anim_svg}</div>"
         )
 
     def _repr_html_(self, x0=-10, width=30):
         frame = compute_svg_frame_init(self.nodes)
         elements = []
-        height = 2 + int(0.6 * len(self.nodes))
+
+        height = compute_height(self.nodes) + 1
         for _, e, attributes in frame:
             for name, v in attributes.items():
                 e.__setattr__(name, v)

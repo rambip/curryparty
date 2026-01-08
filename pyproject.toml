@@ -1,6 +1,6 @@
 [project]
 name = "curryparty"
-version = "0.2.1"
+version = "0.2.2"
 description = "Python playground to learn lambda calculus"
 readme = "README.md"
 authors = [
