@@ -6,7 +6,8 @@ except ImportError:
     raise ImportError(
         "curryparty needs the `polars` library. \n Please install it, typically with `pip install polars`"
     )
-from svg import SVG
+from svg import SVG, Rect
+import uuid
 
 from .core import SCHEMA, beta_reduce, compose, find_redexes, find_variables, subtree
 from .display import (
@@ -55,23 +56,28 @@ class Term:
             if term is None:
                 break
 
-    def show_beta(self):
+    def show_beta(self, x0=-10, width=30):
+        """
+        Generates an HTML representation that toggles visibility between
+        a static state and a SMIL animation on hover using pure CSS.
+        """
         candidates = find_redexes(self.nodes)
         if len(candidates) == 0:
-            return None
+            return self._repr_html_()
+
         _redex, lamb, b = candidates.row(0)
         new_nodes = beta_reduce(self.nodes, lamb, b)
         vars = find_variables(self.nodes, lamb)["id"]
         b_subtree = subtree(self.nodes, b)
         shapes: dict[int, ShapeAnim] = {}
-        N_STEPS = 8
+        N_STEPS = 6
 
         for t in range(N_STEPS):
-            if t < 2:
+            if t == 0:
                 items = compute_svg_frame_init(self.nodes)
-            elif t == 2 or t == 3:
+            elif t == 1 or t == 2:
                 items = compute_svg_frame_phase_a(self.nodes, lamb, b_subtree, vars)
-            elif t == 4 or t == 5:
+            elif t == 3 or t == 4:
                 items = compute_svg_frame_phase_b(
                     self.nodes, lamb, b_subtree, new_nodes
                 )
@@ -82,18 +88,37 @@ class Term:
                     shapes[k] = ShapeAnim(e)
                 shapes[k].append_frame(t, attributes.items())
 
-        elements = [x.to_element(N_STEPS) for x in shapes.values()]
+        figure_id = uuid.uuid4()
+        box_id = f"lambda_box_{figure_id}".replace("-", "")
+        anim_elements = [
+            x.to_element(N_STEPS, begin=f"{box_id}.click", reset=f"{box_id}.mouseover")
+            for x in shapes.values()
+        ]
         height = 2 + int(0.6 * len(self.nodes))
-        return Html(
-            SVG(
-                xmlns="http://www.w3.org/2000/svg",
-                viewBox=f"-10 0 30 {height}",  # type: ignore
-                height=f"{35 * height}px",  # type: ignore
-                elements=elements,
-            ).as_str()
+
+        anim_elements.append(
+            Rect(
+                id=box_id,
+                x=str(x0),
+                y="0",
+                width="100%",
+                height="100%",
+                fill="transparent",
+            )
         )
 
-    def _repr_html_(self):
+        anim_svg = SVG(
+            xmlns="http://www.w3.org/2000/svg",
+            viewBox=f"{x0} 0 {width} {height}",
+            height=f"{35 * height}px",
+            elements=anim_elements,
+        ).as_str()
+
+        return Html(
+            f"<div><div>click to animate, move away and back to reset</div>{anim_svg}</div>"
+        )
+
+    def _repr_html_(self, x0=-10, width=30):
         frame = compute_svg_frame_init(self.nodes)
         elements = []
         height = 2 + int(0.6 * len(self.nodes))
@@ -103,7 +128,7 @@ class Term:
             elements.append(e)
         return SVG(
             xmlns="http://www.w3.org/2000/svg",
-            viewBox=f"-10 0 30 {height}",  # type: ignore
+            viewBox=f"{x0} 0 {width} {height}",  # type: ignore
             height=f"{35 * height}px",  # type: ignore
             elements=elements,
         ).as_str()

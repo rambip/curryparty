@@ -56,7 +56,7 @@ class ShapeAnim:
             self.attributes.add(name)
             self.values[i, name] = v
 
-    def to_element(self, n: int):
+    def to_element(self, n: int, begin: str, reset: str):
         elements = []
 
         visible = [
@@ -74,12 +74,24 @@ class ShapeAnim:
             for i in range(n):
                 if (i, name) not in self.values:
                     self.values[i, name] = non_nulls[0]
+            self.shape.__setattr__(name, non_nulls[0])
+
             elements.append(
                 Animate(
                     attributeName=name,
                     values=";".join(str(self.values[i, name]) for i in range(n)),
                     dur=timedelta(seconds=self.duration),
-                    repeatCount="indefinite",
+                    begin=begin,
+                    fill="freeze",
+                    repeatCount="1",
+                )
+            )
+            elements.append(
+                Animate(
+                    attributeName=name,
+                    values=f"{non_nulls[0]}",
+                    dur=0,
+                    begin=reset,
                 )
             )
         elements.append(
@@ -87,10 +99,21 @@ class ShapeAnim:
                 attributeName="opacity",
                 values=";".join("1" if v else "0" for v in visible),
                 dur=timedelta(seconds=self.duration),
-                repeatCount="indefinite",
+                begin=begin,
+                fill="freeze",
+                repeatCount="1",
+            )
+        )
+        elements.append(
+            Animate(
+                attributeName="opacity",
+                values="1" if visible[0] else "0",
+                dur=0,
+                begin=reset,
             )
         )
 
         assert not self.shape.elements
+        self.shape
         self.shape.elements = elements
         return self.shape

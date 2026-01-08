@@ -1,7 +1,7 @@
 import marimo
 
 __generated_with = "0.18.4"
-app = marimo.App(width="full")
+app = marimo.App(width="medium")
 
 with app.setup:
     import marimo as mo
@@ -38,7 +38,7 @@ def _():
 
 @app.cell
 def _(omega):
-    omega(omega).show_beta()
+    omega(omega).show_beta(width=20)
     return
 
 
@@ -56,7 +56,7 @@ def _(omega):
 
 @app.cell
 def _(s, zero):
-    mo.vstack([x.show_beta() for x in s(s(s(zero))).reduction_chain()])
+    mo.carousel([x.show_beta() for x in s(s(s(zero))).reduction_chain()])
     return
 
 
