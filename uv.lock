@@ -36,6 +36,31 @@ wheels = [
 ]
 
 [[package]]
+name = "curryparty"
+version = "0.2.2"
+source = { editable = "." }
+dependencies = [
+    { name = "svg-py" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "marimo" },
+    { name = "polars" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "svg-py", specifier = ">=1.9.2" }]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "marimo", specifier = ">=0.18.4" },
+    { name = "polars", specifier = ">=1.36.1" },
+    { name = "ruff", specifier = ">=0.14.8" },
+]
+
+[[package]]
 name = "docutils"
 version = "0.22.4"
 source = { registry = "https://pypi.org/simple" }
@@ -81,33 +106,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/72/3a/79a912fbd4d8dd6fbb02bf69afd3bb72cf0c729bb3063c6f4498603db17a/jedi-0.19.2.tar.gz", hash = "sha256:4770dc3de41bde3966b02eb84fbcf557fb33cce26ad23da12c742fb50ecb11f0", size = 1231287, upload-time = "2024-11-11T01:41:42.873Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c0/5a/9cac0c82afec3d09ccd97c8b6502d48f165f9124db81b4bcb90b4af974ee/jedi-0.19.2-py2.py3-none-any.whl", hash = "sha256:a8ef22bde8490f57fe5c7681a3c83cb58874daf72b4784de3cce5b6ef6edb5b9", size = 1572278, upload-time = "2024-11-11T01:41:40.175Z" },
-]
-
-[[package]]
-name = "lambda-calc-py"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "polars" },
-    { name = "svg-py" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "marimo" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "polars", specifier = ">=1.36.1" },
-    { name = "svg-py", specifier = ">=1.9.2" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "marimo", specifier = ">=0.18.4" },
-    { name = "ruff", specifier = ">=0.14.8" },
 ]
 
 [[package]]
