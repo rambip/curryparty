@@ -6,8 +6,9 @@ except ImportError:
     raise ImportError(
         "curryparty needs the `polars` library. \n Please install it, typically with `pip install polars`"
     )
-from svg import SVG, Rect
 import uuid
+
+from svg import SVG, Rect
 
 from .core import SCHEMA, beta_reduce, compose, find_redexes, find_variables, subtree
 from .display import (
@@ -116,7 +117,7 @@ class Term:
         ).as_str()
 
         return Html(
-            f"<div><div style=\"margin:5px\">click to animate, move away and back to reset</div>{anim_svg}</div>"
+            f'<div><div style="margin:5px">click to animate, move away and back to reset</div>{anim_svg}</div>'
         )
 
     def _repr_html_(self, x0=-10, width=30):
@@ -136,6 +137,12 @@ class Term:
         ).as_str()
 
 
+def offset_var(x: Union[int, str], offset: int) -> Union[int, str]:
+    if isinstance(x, int):
+        return x + offset
+    return x
+
+
 class L:
     def __init__(self, *lambda_names):
         self.n = len(lambda_names)
@@ -153,7 +160,7 @@ class L:
         if isinstance(t, L):
             offset = self.n
             for i, x in t.refs:
-                self.refs.append((offset + i, t.lambdas.get(x, x)))
+                self.refs.append((offset + i, offset_var(t.lambdas.get(x, x), offset)))
 
             for i, x in t.args:
                 self.args.append((offset + i, offset + x))
@@ -170,7 +177,10 @@ class L:
 
     def call(self, arg: Union[str, "L"]) -> "L":
         assert self.last_ is not None
-        self.refs = [(i + 1, x) if i >= self.last_ else (i, x) for (i, x) in self.refs]
+        self.refs = [
+            (i + 1, offset_var(x, 1)) if i >= self.last_ else (i, x)
+            for (i, x) in self.refs
+        ]
         self.args = [
             (i + 1, x + 1) if i >= self.last_ else (i, x) for (i, x) in self.args
         ]
@@ -182,7 +192,15 @@ class L:
         return self
 
     def build(self) -> "Term":
-        self.refs = [(i, self.lambdas.get(x, x)) for i, x in self.refs]
+        def bind_var(x: Union[str, int]) -> int:
+            # check that all remaining unbound variables are bound to this lambda
+            if isinstance(x, int):
+                return x
+            if x not in self.lambdas:
+                raise ValueError(f"variable {x} is not bound to any lambda")
+            return self.lambdas[x]
+
+        self.refs = [(i, bind_var(x)) for i, x in self.refs]
         ref = pl.from_records(
             self.refs, orient="row", schema={"id": pl.UInt32, "ref": pl.UInt32}
         )
