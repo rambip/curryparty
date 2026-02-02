@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://github.com/rambip/curryparty/blob/main/logo.svg?raw=true" />
+  <img src="https://github.com/rambip/curryparty/blob/main/logo.svg?raw=true" width="500px"/>
 </p>
 
 
