@@ -1,3 +1,8 @@
+<p align="center">
+  <img src="https://github.com/rambip/curryparty/blob/main/logo.svg?raw=true" />
+</p>
+
+
 # Curry party
 
 `curryparty` is a library created to explore, visualize and teach lambda-calculus concepts.
