@@ -17,10 +17,19 @@ from .display import (
     compute_svg_frame_init,
     compute_svg_frame_phase_a,
     compute_svg_frame_phase_b,
+    count_variables,
 )
 from .utils import ShapeAnim
 
 __all__ = ["L", "V"]
+
+
+def log2(n):
+    if n <= 0:
+        raise ValueError(f"log2 of negative number {n}")
+    elif n == 1:
+        return 0
+    return 1 + log2(n // 2)
 
 
 class Term:
@@ -58,7 +67,7 @@ class Term:
             if term is None:
                 break
 
-    def show_beta(self, x0=-10, width=30):
+    def show_beta(self):
         """
         Generates an HTML representation that toggles visibility between
         a static state and a SMIL animation on hover using pure CSS.
@@ -71,7 +80,11 @@ class Term:
         new_nodes = beta_reduce(self.nodes, lamb, b)
         vars = find_variables(self.nodes, lamb)["id"]
         b_subtree = subtree(self.nodes, b)
-        height = compute_height(self.nodes) + 3
+        height = min(compute_height(self.nodes), compute_height(new_nodes)) * 2
+        if count_variables(self.nodes) == 0:
+            return "no width"
+        raw_width = max(count_variables(self.nodes), count_variables(new_nodes))
+        width = 1 << (1 + log2(raw_width))
         shapes: dict[int, ShapeAnim] = {}
         N_STEPS = 6
 
@@ -101,7 +114,7 @@ class Term:
         anim_elements.append(
             Rect(
                 id=box_id,
-                x=str(x0),
+                x=f"{-width}",
                 y="0",
                 width="100%",
                 height="100%",
@@ -109,32 +122,47 @@ class Term:
             )
         )
 
+        # prefered size in pixels
+        H = height * 40
         anim_svg = SVG(
             xmlns="http://www.w3.org/2000/svg",
-            viewBox=f"{x0} 0 {width} {height}",
-            height=f"{35 * height}px",
+            viewBox=f"{-width} 0 {2 * width} {height}",
+            style=f"max-height:{H}px",
             elements=anim_elements,
         ).as_str()
 
         return Html(
-            f'<div><div style="margin:5px">click to animate, move away and back to reset</div>{anim_svg}</div>'
+            '<div style="width:100%">'
+            '<div style="margin-bottom:30px">'
+            "click to animate, move away and back to reset"
+            "</div>"
+            f"{anim_svg}"
+            "</div>"
         )
 
-    def _repr_html_(self, x0=-10, width=30):
+    def _repr_html_(self, x0=-10):
         frame = compute_svg_frame_init(self.nodes)
+
+        width = (1 << (1 + log2(count_variables(self.nodes)))) + 4
+        height = compute_height(self.nodes) + 1
         elements = []
 
-        height = compute_height(self.nodes) + 1
         for _, e, attributes in frame:
             for name, v in attributes.items():
                 e.__setattr__(name, v)
             elements.append(e)
-        return SVG(
+
+        # prefered size in pixels
+        H = height * 40
+        W = width * 40
+
+        svg_element = SVG(
             xmlns="http://www.w3.org/2000/svg",
-            viewBox=f"{x0} 0 {width} {height}",  # type: ignore
-            height=f"{35 * height}px",  # type: ignore
+            viewBox=f"{-1} 0 {width} {height}",  # type: ignore
             elements=elements,
+            style=f"max-height:{H}px; margin-left: clamp(0px, calc(100% - {W}px), 100px)",
         ).as_str()
+        return f"<div>{svg_element}</div>"
 
 
 def offset_var(x: Union[int, str], offset: int) -> Union[int, str]:
@@ -156,26 +184,32 @@ class L:
         self.lambdas[name] = self.n
         return self
 
-    def _append_subtree_or_subexpression(self, t: Union[str, "L"]):
+    def _append_subtree_or_subexpression(self, t: Union[str, "L", Term]):
+        offset = self.n
         if isinstance(t, L):
-            offset = self.n
             for i, x in t.refs:
                 self.refs.append((offset + i, offset_var(t.lambdas.get(x, x), offset)))
 
             for i, x in t.args:
                 self.args.append((offset + i, offset + x))
             self.n += t.n
+        elif isinstance(t, Term):
+            for i, x in t.nodes.select("id", "ref").drop_nulls().iter_rows():
+                self.refs.append((offset + i, offset + x))
+            for i, x in t.nodes.select("id", "arg").drop_nulls().iter_rows():
+                self.args.append((offset + i, offset + x))
+            self.n += len(t.nodes)
         else:
             assert isinstance(t, str)
             self.refs.append((self.n, t))
             self.n += 1
 
-    def _(self, x: Union[str, "L"]) -> "L":
+    def _(self, x: Union[str, "L", Term]) -> "L":
         self.last_ = self.n
         self._append_subtree_or_subexpression(x)
         return self
 
-    def call(self, arg: Union[str, "L"]) -> "L":
+    def call(self, arg: Union[str, "L", Term]) -> "L":
         assert self.last_ is not None
         self.refs = [
             (i + 1, offset_var(x, 1)) if i >= self.last_ else (i, x)

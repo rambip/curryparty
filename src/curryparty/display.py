@@ -6,6 +6,15 @@ import svg
 from .utils import Interval
 
 
+def compute_height(nodes: pl.DataFrame):
+    _, y = compute_layout(nodes)
+    return max(interval[1] for interval in y.values() if interval) + 1
+
+
+def count_variables(nodes: pl.DataFrame):
+    return nodes["ref"].count()
+
+
 def compute_layout(
     nodes: pl.DataFrame, lamb=None, replaced_var_width=1
 ) -> tuple[dict[int, int], dict[int, int]]:
@@ -21,7 +30,7 @@ def compute_layout(
         else:
             y[child] = y[node].shift(1)
 
-    next_var_x = nodes.select(pl.col("ref").count()).item()
+    next_var_x = count_variables(nodes) - 1
 
     for node, ref, arg in (
         nodes.sort("id", descending=True).select("id", "ref", "arg").iter_rows()
@@ -37,10 +46,6 @@ def compute_layout(
             x[node] = x[child] | x.get(node, Interval(None))
             y[node] = y[child] | y[node]
     return x, y
-
-def compute_height(nodes: pl.DataFrame):
-    _, y = compute_layout(nodes)
-    return max(interval[1] for interval in y.values() if interval)
 
 
 def draw(
