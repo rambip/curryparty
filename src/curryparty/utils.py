@@ -33,23 +33,20 @@ class Interval:
             return Interval((self.values[0] + offset, self.values[1] + offset))
 
 
-@dataclass
 class ShapeAnim:
     shape: Element
     attributes: set[str]
     values: dict[tuple[int, str], Any]
     n: int
     duration: int
+    zindex: int
 
-    def __init__(
-        self,
-        shape: Element,
-        duration: int = 7,
-    ):
+    def __init__(self, shape: Element, zindex: int = 0, duration=7):
         self.shape = shape
         self.attributes = set()
         self.values = {}
         self.duration = duration
+        self.zindex = zindex
 
     def append_frame(self, i: int, attributes: Iterable[tuple[str, Any]]):
         for name, v in attributes:

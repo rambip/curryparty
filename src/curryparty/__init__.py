@@ -99,16 +99,17 @@ class Term:
                 )
             else:
                 items = compute_svg_frame_final(new_nodes)
-            for k, e, attributes in items:
+            for k, e, zindex, attributes in items:
                 if k not in shapes:
-                    shapes[k] = ShapeAnim(e)
+                    shapes[k] = ShapeAnim(e, zindex)
                 shapes[k].append_frame(t, attributes.items())
 
         figure_id = uuid.uuid4()
         box_id = f"lambda_box_{figure_id}".replace("-", "")
+        primitives = sorted(shapes.values(), key=lambda x: x.zindex)
         anim_elements = [
             x.to_element(N_STEPS, begin=f"{box_id}.click", reset=f"{box_id}.mouseover")
-            for x in shapes.values()
+            for x in primitives
         ]
 
         anim_elements.append(
@@ -145,12 +146,13 @@ class Term:
 
         width = (1 << (1 + log2(count_variables(self.nodes)))) + 4
         height = compute_height(self.nodes) + 1
-        elements = []
+        primitives = []
 
-        for _, e, attributes in frame:
+        for _, e, zindex, attributes in frame:
             for name, v in attributes.items():
                 e.__setattr__(name, v)
-            elements.append(e)
+            primitives.append((e, zindex))
+        elements = [e for (e, z) in sorted(primitives, key=lambda x: x[1])]
 
         # prefered size in pixels
         H = height * 40

@@ -57,7 +57,7 @@ def draw(
     key: Any,
     replaced=False,
     removed=False,
-) -> Iterable[tuple[Any, svg.Element, dict]]:
+) -> Iterable[tuple[Any, svg.Element, int, dict]]:
     x_node = x[i_node]
     y_node = y[i_node]
     if True:
@@ -84,6 +84,7 @@ def draw(
         yield (
             ("r", key),
             r,
+            0,
             {
                 "x": 0.1 + x_node[0],
                 "y": 0.1 + y_node[0],
@@ -102,6 +103,7 @@ def draw(
         yield (
             ("l", key),
             e,
+            1,
             {
                 "x1": x_node[0] + 0.5,
                 "y1": y_node[0] + 0.1,
@@ -123,6 +125,7 @@ def draw(
             yield (
                 ("b", key),
                 e1,
+                1,
                 {
                     "x1": 0.5 + x_node[1],
                     "y1": 0.5 + y_node[0],
@@ -133,6 +136,7 @@ def draw(
             yield (
                 ("c", key),
                 e2,
+                1,
                 {
                     "cx": 0.5 + x_node[1],
                     "cy": 0.5 + y_node[0],
@@ -142,7 +146,7 @@ def draw(
 
 def compute_svg_frame_init(
     nodes: pl.DataFrame,
-) -> Iterable[tuple[Any, svg.Element, dict[str, Any]]]:
+) -> Iterable[tuple[Any, svg.Element, int, dict[str, Any]]]:
     x, y = compute_layout(nodes)
     for target_id, ref, arg in (
         nodes.select("id", "ref", "arg").sort("id", descending=True).iter_rows()
@@ -155,7 +159,7 @@ def compute_svg_frame_phase_a(
     lamb: int,
     b_subtree: pl.DataFrame,
     vars: pl.Series,
-):
+) -> Iterable[tuple[Any, svg.Element, int, dict[str, Any]]]:
     redex = lamb - 1 if lamb is not None else None
     b_width = b_subtree.count()["ref"].item()
     x, y = compute_layout(nodes, lamb=lamb, replaced_var_width=b_width)
@@ -186,7 +190,7 @@ def compute_svg_frame_phase_b(
     lamb: int,
     b_subtree: pl.DataFrame,
     new_nodes: pl.DataFrame,
-):
+) -> Iterable[tuple[Any, svg.Element, int, dict[str, Any]]]:
     b_width = b_subtree.count()["ref"].item()
     b = b_subtree["id"][0]
     x, y = compute_layout(nodes, lamb=lamb, replaced_var_width=b_width)
@@ -228,7 +232,9 @@ def compute_svg_frame_phase_b(
         yield from draw(x, y, key, ref, arg, key=key)
 
 
-def compute_svg_frame_final(reduced: pl.DataFrame):
+def compute_svg_frame_final(
+    reduced: pl.DataFrame,
+) -> Iterable[tuple[Any, svg.Element, int, dict[str, Any]]]:
     x, y = compute_layout(reduced)
     for target_id, bid, ref, arg in (
         reduced.select("id", "bid", "ref", "arg")
