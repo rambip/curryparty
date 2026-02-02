@@ -99,15 +99,6 @@ class ShapeAnim:
             groups[frame.key].append(frame)
         return groups
 
-    @staticmethod
-    def from_grouped_frames(
-        grouped: dict[Any, list[ShapeAnimFrame]],
-        duration: int = 7,
-    ) -> list["ShapeAnim"]:
-        anims = [ShapeAnim.from_frames(frames, duration) for frames in grouped.values()]
-        anims.sort(key=lambda a: a.zindex)
-        return anims
-
     def append_frame(self, i: int, attributes: Iterable[tuple[str, Any]]):
         for name, v in attributes:
             self.attributes.add(name)

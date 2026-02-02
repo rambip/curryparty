@@ -67,7 +67,7 @@ class Term:
             if term is None:
                 break
 
-    def show_beta(self):
+    def show_beta(self, duration=7):
         """
         Generates an HTML representation that toggles visibility between
         a static state and a SMIL animation on hover using pure CSS.
@@ -104,10 +104,11 @@ class Term:
         figure_id = uuid.uuid4()
         box_id = f"lambda_box_{figure_id}".replace("-", "")
         grouped = ShapeAnim.group_by_key(frame_data)
-        primitives = ShapeAnim.from_grouped_frames(grouped)
+        anims = [ShapeAnim.from_frames(frames, duration) for frames in grouped.values()]
+        anims.sort(key=lambda a: a.zindex)
         anim_elements = [
             x.to_element(N_STEPS, begin=f"{box_id}.click", reset=f"{box_id}.mouseover")
-            for x in primitives
+            for x in anims
         ]
 
         anim_elements.append(
@@ -140,7 +141,7 @@ class Term:
         )
 
     def _repr_html_(self, x0=-10):
-        frame = compute_svg_frame_init(self.nodes)
+        frame = sorted(compute_svg_frame_init(self.nodes), key=lambda x: x.zindex)
 
         width = (1 << (1 + log2(count_variables(self.nodes)))) + 4
         height = compute_height(self.nodes) + 1
