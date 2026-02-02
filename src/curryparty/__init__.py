@@ -19,7 +19,7 @@ from .display import (
     compute_svg_frame_phase_b,
     count_variables,
 )
-from .utils import ShapeAnim
+from .utils import ShapeAnim, ShapeAnimFrame
 
 __all__ = ["L", "V"]
 
@@ -85,28 +85,26 @@ class Term:
             return "no width"
         raw_width = max(count_variables(self.nodes), count_variables(new_nodes))
         width = 1 << (1 + log2(raw_width))
-        shapes: dict[int, ShapeAnim] = {}
+        frame_data: list[ShapeAnimFrame] = []
         N_STEPS = 6
 
         for t in range(N_STEPS):
             if t == 0:
-                items = compute_svg_frame_init(self.nodes)
+                items = compute_svg_frame_init(self.nodes, t)
             elif t == 1 or t == 2:
-                items = compute_svg_frame_phase_a(self.nodes, lamb, b_subtree, vars)
+                items = compute_svg_frame_phase_a(self.nodes, lamb, b_subtree, vars, t)
             elif t == 3 or t == 4:
                 items = compute_svg_frame_phase_b(
-                    self.nodes, lamb, b_subtree, new_nodes
+                    self.nodes, lamb, b_subtree, new_nodes, t
                 )
             else:
-                items = compute_svg_frame_final(new_nodes)
-            for k, e, zindex, attributes in items:
-                if k not in shapes:
-                    shapes[k] = ShapeAnim(e, zindex)
-                shapes[k].append_frame(t, attributes.items())
+                items = compute_svg_frame_final(new_nodes, t)
+            frame_data.extend(items)
 
         figure_id = uuid.uuid4()
         box_id = f"lambda_box_{figure_id}".replace("-", "")
-        primitives = sorted(shapes.values(), key=lambda x: x.zindex)
+        grouped = ShapeAnim.group_by_key(frame_data)
+        primitives = ShapeAnim.from_grouped_frames(grouped)
         anim_elements = [
             x.to_element(N_STEPS, begin=f"{box_id}.click", reset=f"{box_id}.mouseover")
             for x in primitives
@@ -146,13 +144,8 @@ class Term:
 
         width = (1 << (1 + log2(count_variables(self.nodes)))) + 4
         height = compute_height(self.nodes) + 1
-        primitives = []
 
-        for _, e, zindex, attributes in frame:
-            for name, v in attributes.items():
-                e.__setattr__(name, v)
-            primitives.append((e, zindex))
-        elements = [e for (e, z) in sorted(primitives, key=lambda x: x[1])]
+        elements = [ShapeAnim.from_single_frame(x) for x in frame]
 
         # prefered size in pixels
         H = height * 40

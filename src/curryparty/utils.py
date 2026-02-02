@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Iterable, Optional
 
@@ -33,27 +33,87 @@ class Interval:
             return Interval((self.values[0] + offset, self.values[1] + offset))
 
 
-class ShapeAnim:
-    shape: Element
-    attributes: set[str]
-    values: dict[tuple[int, str], Any]
-    n: int
-    duration: int
-    zindex: int
+@dataclass
+class ShapeAnimFrame:
+    element: Element
+    key: Any
+    idx: int
+    attrs: dict[str, Any]
+    zindex: int = 0
 
-    def __init__(self, shape: Element, zindex: int = 0, duration=7):
-        self.shape = shape
-        self.attributes = set()
-        self.values = {}
-        self.duration = duration
-        self.zindex = zindex
+    def apply_attributes(self):
+        for name, v in self.attrs.items():
+            self.element.__setattr__(name, v)
+
+
+@dataclass
+class ShapeAnim:
+    key: Any
+    element: Element
+    zindex: int
+    duration: int
+    attributes: set[str] = field(default_factory=set)
+    values: dict[tuple[int, str], Any] = field(default_factory=dict)
+
+    @staticmethod
+    def from_single_frame(frame: ShapeAnimFrame) -> Element:
+        frame.apply_attributes()
+        return frame.element
+
+    @staticmethod
+    def from_frames(frames: list[ShapeAnimFrame], duration: int = 7) -> "ShapeAnim":
+        if not frames:
+            raise ValueError("frames list cannot be empty")
+
+        frames.sort(key=lambda f: f.idx)
+
+        zindex = frames[0].zindex
+        for f in frames[1:]:
+            if f.zindex != zindex:
+                raise ValueError(
+                    f"zindex mismatch for key {frames[0].key}: got {f.zindex}, expected {zindex}"
+                )
+
+        anim = ShapeAnim(
+            key=frames[0].key,
+            element=frames[0].element,
+            zindex=zindex,
+            duration=duration,
+        )
+
+        for f in frames:
+            for name, v in f.attrs.items():
+                anim.attributes.add(name)
+                anim.values[f.idx, name] = v
+
+        return anim
+
+    @staticmethod
+    def group_by_key(
+        frames: Iterable[ShapeAnimFrame],
+    ) -> dict[Any, list[ShapeAnimFrame]]:
+        groups: dict[Any, list[ShapeAnimFrame]] = {}
+        for frame in frames:
+            if frame.key not in groups:
+                groups[frame.key] = []
+            groups[frame.key].append(frame)
+        return groups
+
+    @staticmethod
+    def from_grouped_frames(
+        grouped: dict[Any, list[ShapeAnimFrame]],
+        duration: int = 7,
+    ) -> list["ShapeAnim"]:
+        anims = [ShapeAnim.from_frames(frames, duration) for frames in grouped.values()]
+        anims.sort(key=lambda a: a.zindex)
+        return anims
 
     def append_frame(self, i: int, attributes: Iterable[tuple[str, Any]]):
         for name, v in attributes:
             self.attributes.add(name)
             self.values[i, name] = v
 
-    def to_element(self, n: int, begin: str, reset: str):
+    def to_element(self, n: int, begin: str, reset: str) -> Element:
         elements = []
 
         visible = [
@@ -71,7 +131,7 @@ class ShapeAnim:
             for i in range(n):
                 if (i, name) not in self.values:
                     self.values[i, name] = non_nulls[0]
-            self.shape.__setattr__(name, non_nulls[0])
+            self.element.__setattr__(name, non_nulls[0])
 
             elements.append(
                 Animate(
@@ -110,7 +170,6 @@ class ShapeAnim:
             )
         )
 
-        assert not self.shape.elements
-        self.shape
-        self.shape.elements = elements
-        return self.shape
+        assert not self.element.elements
+        self.element.elements = elements
+        return self.element
