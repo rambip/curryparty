@@ -1,0 +1,12 @@
+[tools]
+python = "3.13"
+uv = "latest"
+
+[tasks]
+bump-patch = { run = "uv version --bump patch" }
+bump-minor = { run = "uv version --bump minor" }
+edit = {run = "uv run marimo edit --no-token ."}
+bench = {run="uv run bench.py && uv run tuna results.profile"}
+
+[prepare]
+uv = { auto = true }

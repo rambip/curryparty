@@ -44,7 +44,7 @@ class Term:
         return Term(compose(self.nodes, other.nodes))
 
     def beta(self) -> Optional["Term"]:
-        candidates = find_redexes(self.nodes)
+        candidates = find_redexes(self.nodes).first().collect()
         if len(candidates) == 0:
             return None
         _redex, lamb, b = candidates.row(0)
@@ -72,14 +72,14 @@ class Term:
         Generates an HTML representation that toggles visibility between
         a static state and a SMIL animation on hover using pure CSS.
         """
-        candidates = find_redexes(self.nodes)
+        candidates = find_redexes(self.nodes).first().collect()
         if len(candidates) == 0:
             return self._repr_html_()
 
         _redex, lamb, b = candidates.row(0)
         new_nodes = beta_reduce(self.nodes, lamb, b)
-        vars = find_variables(self.nodes, lamb)["id"]
-        b_subtree = subtree(self.nodes, b)
+        vars = find_variables(self.nodes, lamb).collect()["id"]
+        b_subtree = subtree(self.nodes, b).collect()
         height = min(compute_height(self.nodes), compute_height(new_nodes)) * 2
         if count_variables(self.nodes) == 0:
             return "no width"
