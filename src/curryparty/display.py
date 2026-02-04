@@ -1,59 +1,67 @@
-from typing import Any, Iterable, Optional, Union
+from typing import Any, Iterable, List, Optional
 
-import polars as pl
 import svg
 
+from .core import AbstractTerm, NodeId
 from .utils import Interval, ShapeAnimFrame
 
 
-def compute_height(nodes: pl.DataFrame):
-    _, y = compute_layout(nodes)
+def compute_height(term: AbstractTerm):
+    _, y = compute_layout(term)
     return max(interval[1] for interval in y.values() if interval) + 1
 
 
-def count_variables(nodes: pl.DataFrame):
-    return nodes["ref"].count()
+def count_variables(term: AbstractTerm):
+    # TODO: more efficient
+    return sum(1 for x in term.get_subtree(term.root()) if term.node(x).ref is not None)
 
 
 def compute_layout(
-    nodes: pl.DataFrame, lamb=None, replaced_var_width=1
-) -> tuple[dict[int, int], dict[int, int]]:
-    y = {0: Interval((0, 0))}
+    term: AbstractTerm, lamb: Optional[NodeId] = None, replaced_var_width=1
+) -> tuple[dict[NodeId, Interval], dict[NodeId, Interval]]:
+    y = {term.root(): Interval((0, 0))}
     x = {}
-    for node, ref, arg in nodes.select("id", "ref", "arg").iter_rows():
+    nodes = list(term.get_subtree(term.root()))
+    for node_id in nodes:
+        node = term.node(node_id)
+        ref = node.ref
+        arg = node.get_arg()
         if ref is not None:
             continue
-        child = node + 1
+        child = term.node(node_id).get_left()
+        assert child is not None
         if arg is not None:
-            y[child] = y[node].shift(0 if nodes["arg"][child] is None else 1)
-            y[arg] = y[node].shift(0)
+            y[child] = y[node_id].shift(0 if term.node(child).get_arg() is None else 1)
+            y[arg] = y[node_id].shift(0)
         else:
-            y[child] = y[node].shift(1)
+            y[child] = y[node_id].shift(1)
 
-    next_var_x = count_variables(nodes) - 1
+    next_var_x = count_variables(term) - 1
 
-    for node, ref, arg in (
-        nodes.sort("id", descending=True).select("id", "ref", "arg").iter_rows()
-    ):
+    for node_id in reversed(nodes):
+        node = term.node(node_id)
+        ref = node.ref
+        arg = node.get_arg()
         if ref is not None:
             width = replaced_var_width if ref == lamb else 1
-            x[node] = Interval((next_var_x - width + 1, next_var_x))
+            x[node_id] = Interval((next_var_x - width + 1, next_var_x))
             next_var_x -= width
-            x[ref] = x[node] | x.get(ref, Interval(None))
+            x[ref] = x[node_id] | x.get(ref, Interval(None))
 
         else:
-            child = node + 1
-            x[node] = x[child] | x.get(node, Interval(None))
-            y[node] = y[child] | y[node]
+            child = term.node(node_id).get_left()
+            assert child is not None
+            x[node_id] = x[child] | x.get(node_id, Interval(None))
+            y[node_id] = y[child] | y[node_id]
     return x, y
 
 
 def draw(
-    x: dict[Union[int, tuple[int, int]], Interval],
-    y: dict[Union[int, tuple[int, int]], Interval],
-    i_node: Union[int, tuple[int, int]],
-    ref: Optional[int],
-    arg: Optional[int],
+    x: dict[NodeId, Interval],
+    y: dict[NodeId, Interval],
+    i_node: NodeId,
+    ref: Optional[NodeId],
+    arg: Optional[NodeId],
     key: Any,
     idx: int,
     replaced=False,
@@ -164,87 +172,105 @@ def draw(
 
 
 def compute_svg_frame_init(
-    nodes: pl.DataFrame, idx: int = 0
+    term: AbstractTerm, idx: int = 0
 ) -> Iterable[ShapeAnimFrame]:
-    x, y = compute_layout(nodes)
-    for target_id, ref, arg in (
-        nodes.select("id", "ref", "arg").sort("id", descending=True).iter_rows()
-    ):
-        yield from draw(x, y, target_id, ref, arg, key=target_id, idx=idx)
+    x, y = compute_layout(term)
+    for node_id in term.get_subtree(term.root()):
+        node = term.node(node_id)
+        ref = node.ref
+        arg = node.get_arg()
+        yield from draw(x, y, node_id, ref, arg, key=node_id, idx=idx)
 
 
 def compute_svg_frame_phase_a(
-    nodes: pl.DataFrame, lamb: int, b_subtree: pl.DataFrame, vars: pl.Series, idx: int
+    term: AbstractTerm,
+    redex: NodeId,
+    b_subtree: List[NodeId],
+    vars: List[NodeId],
+    idx: int,
 ) -> Iterable[ShapeAnimFrame]:
-    redex = lamb - 1 if lamb is not None else None
-    b_width = b_subtree.count()["ref"].item()
-    x, y = compute_layout(nodes, lamb=lamb, replaced_var_width=b_width)
-    for target_id, ref, arg in (
-        nodes.select("id", "ref", "arg").sort("id", descending=True).iter_rows()
-    ):
-        replaced = ref is not None and ref == lamb
+    lamb = term.node(redex).get_left()
+    assert lamb is not None
+    b_width = sum(1 for x in b_subtree if term.node(x).ref is not None)
+    x, y = compute_layout(term, lamb=lamb, replaced_var_width=b_width)
+    for node_id in term.get_subtree(term.root()):
+        if node_id in b_subtree:
+            continue
+        node = term.node(node_id)
+        ref = node.ref
+        arg = node.get_arg()
+        replaced = ref == lamb
         yield from draw(
             x,
             y,
-            target_id,
+            node_id,
             ref,
             arg,
-            key=target_id,
+            key=node_id,
             idx=idx,
             replaced=replaced,
-            removed=(target_id == lamb or target_id == redex),
+            removed=(node_id == lamb or node_id == redex),
         )
 
-    for v in vars:
-        for minor, ref, arg in (
-            b_subtree.select("id", "ref", "arg").sort("id", descending=True).iter_rows()
-        ):
-            yield from draw(x, y, minor, ref, arg, key=(v, minor), idx=idx)
+    for stump in vars:
+        for local_id in b_subtree:
+            local_node = term.node(local_id)
+            ref = local_node.ref
+            arg = local_node.get_arg()
+            key = (stump, local_id)
+            yield from draw(x, y, local_id, ref, arg, key=key, idx=idx)
 
 
 def compute_svg_frame_phase_b(
-    nodes: pl.DataFrame,
-    lamb: int,
-    b_subtree: pl.DataFrame,
-    new_nodes: pl.DataFrame,
+    term: AbstractTerm,
+    redex: NodeId,
+    b_subtree: List[NodeId],
+    reduced: AbstractTerm,
     idx: int,
 ) -> Iterable[ShapeAnimFrame]:
-    b_width = b_subtree.count()["ref"].item()
-    b = b_subtree["id"][0]
-    x, y = compute_layout(nodes, lamb=lamb, replaced_var_width=b_width)
+    lamb = term.node(redex).get_left()
+    assert lamb is not None
+    b_width = sum(1 for x in b_subtree if term.node(x).ref is not None)
+    b = term.node(redex).get_arg()
+    assert b is not None
+    x, y = compute_layout(term, lamb=lamb, replaced_var_width=b_width)
     b_x = x[b][0]
     b_y = y[b][0]
-    for bid, arg in new_nodes.select("bid", "arg").iter_rows():
-        if bid["minor"] != bid["major"]:
-            v = bid["major"]
-            minor = bid["minor"]
-            delta_x = x[v][0] - b_x
-            delta_y = y[v][0] - b_y + 1
-            x[(v, minor)] = x[minor].shift(delta_x)
-            y[(v, minor)] = y[minor].shift(delta_y)
+    for node_id in reduced.get_subtree(reduced.root()):
+        node = reduced.node(node_id)
+        previous = node.previous
+        stump = node.previous_stump
+        if stump is not None:
+            delta_x = x[stump][0] - b_x
+            delta_y = y[stump][0] - b_y + 1
+            x[(stump, previous)] = x[previous].shift(delta_x)
+            y[(stump, previous)] = y[previous].shift(delta_y)
 
-    for bid, new_ref, new_arg in new_nodes.select("bid", "ref", "arg").iter_rows():
-        v = bid["major"]
-        minor = bid["minor"]
+    for node_id in reduced.get_subtree(reduced.root()):
+        node = reduced.node(node_id)
+        new_ref = node.ref
+        new_arg = node.get_arg()
+        stump = node.previous_stump
+        previous = node.previous
+
+        key = (stump, previous) if stump is not None else previous
+
         if new_ref is None:
             ref = None
         else:
-            bid_ref = new_nodes["bid"][new_ref]
-            ref = (
-                (bid_ref["major"], bid_ref["minor"])
-                if bid_ref["major"] != bid_ref["minor"]
-                else bid_ref["minor"]
-            )
+            node_ref = reduced.node(new_ref)
+            stump_ref = node_ref.previous_stump
+            previous_ref = node_ref.previous
+            ref = (stump_ref, previous_ref) if stump_ref is not None else previous_ref
         if new_arg is None:
             arg = None
         else:
-            bid_arg = new_nodes["bid"][new_arg]
-            arg = (
-                (bid_arg["major"], bid_arg["minor"])
-                if bid_arg["major"] != bid_arg["minor"]
-                else bid_arg["minor"]
-            )
-        key = (v, minor) if minor != v else minor
+            node_arg = reduced.node(new_arg)
+            stump_arg = node_arg.previous_stump
+            previous_arg = node_arg.previous
+
+            arg = (stump_arg, previous_arg) if stump_arg is not None else previous_arg
+            print(f"arg: {arg}")
         yield from draw(
             x,
             y,
@@ -257,15 +283,14 @@ def compute_svg_frame_phase_b(
 
 
 def compute_svg_frame_final(
-    reduced: pl.DataFrame, idx: int
+    reduced: AbstractTerm, idx: int
 ) -> Iterable[ShapeAnimFrame]:
     x, y = compute_layout(reduced)
-    for target_id, bid, ref, arg in (
-        reduced.select("id", "bid", "ref", "arg")
-        .sort("id", descending=True)
-        .iter_rows()
-    ):
-        minor = bid["minor"]
-        major = bid["major"]
-        key = (major, minor) if minor != major else minor
-        yield from draw(x, y, target_id, ref, arg, key, idx=idx)
+    for node_id in reduced.get_subtree(reduced.root()):
+        node = reduced.node(node_id)
+        ref = node.ref
+        arg = node.get_arg()
+        stump = node.previous_stump
+        previous = node.previous
+        key = (stump, previous) if stump is not None else previous
+        yield from draw(x, y, node_id, ref, arg, key, idx=idx)

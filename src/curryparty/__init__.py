@@ -1,3 +1,8 @@
+"""The `curryparty` library, a playground to learn lambda-calculus.
+
+This library is intended to be used in an interactive
+"""
+
 from typing import Iterable, List, Optional, Union
 
 try:
@@ -8,9 +13,9 @@ except ImportError:
     )
 import uuid
 
-from svg import SVG, Rect
+from svg import SVG, Length, Rect, ViewBoxSpec
 
-from .core import SCHEMA, beta_reduce, compose, find_redexes, find_variables, subtree
+from .core import AbstractTerm
 from .display import (
     compute_height,
     compute_svg_frame_final,
@@ -33,24 +38,18 @@ def log2(n):
 
 
 class Term:
-    def __init__(self, nodes: pl.DataFrame):
-        assert nodes.schema == SCHEMA, (
-            f"{nodes.schema} is different from expected {SCHEMA}"
-        )
-        self.nodes = nodes
-        self.lamb = None
+    def __init__(self, data: AbstractTerm):
+        self.data = data
 
     def __call__(self, other: "Term") -> "Term":
-        return Term(compose(self.nodes, other.nodes))
+        return Term((self.data)(other.data))
 
     def beta(self) -> Optional["Term"]:
-        candidates = find_redexes(self.nodes).first().collect()
-        if len(candidates) == 0:
+        candidates = self.data.find_redexes()
+        redex = next(candidates, None)
+        if redex is None:
             return None
-        _redex, lamb, b = candidates.row(0)
-        self.lamb = lamb
-        self.b = b
-        reduced = beta_reduce(self.nodes, lamb, b)
+        reduced = self.data.beta_reduce(redex)
         return Term(reduced)
 
     def reduce(self):
@@ -61,41 +60,44 @@ class Term:
 
     def reduction_chain(self) -> Iterable["Term"]:
         term = self
-        while True:
+        while term is not None:
             yield term
             term = term.beta()
-            if term is None:
-                break
 
     def show_beta(self, duration=7):
         """
         Generates an HTML representation that toggles visibility between
         a static state and a SMIL animation on hover using pure CSS.
         """
-        candidates = find_redexes(self.nodes).first().collect()
-        if len(candidates) == 0:
+
+        candidates = self.data.find_redexes()
+        redex = next(candidates)
+        if redex is None:
             return self._repr_html_()
 
-        _redex, lamb, b = candidates.row(0)
-        new_nodes = beta_reduce(self.nodes, lamb, b)
-        vars = find_variables(self.nodes, lamb).collect()["id"]
-        b_subtree = subtree(self.nodes, b).collect()
-        height = min(compute_height(self.nodes), compute_height(new_nodes)) * 2
-        if count_variables(self.nodes) == 0:
+        lamb = self.data.node(redex).get_left()
+        assert lamb is not None
+        b = self.data.node(redex).get_arg()
+        assert b is not None
+        new_nodes = self.data.beta_reduce(redex)
+        vars = list(self.data.find_variables(lamb))
+        b_subtree = list(self.data.get_subtree(b))
+        height = min(compute_height(self.data), compute_height(new_nodes)) * 2
+        if count_variables(self.data) == 0:
             return "no width"
-        raw_width = max(count_variables(self.nodes), count_variables(new_nodes))
+        raw_width = max(count_variables(self.data), count_variables(new_nodes))
         width = 1 << (1 + log2(raw_width))
         frame_data: list[ShapeAnimFrame] = []
         N_STEPS = 6
 
         for t in range(N_STEPS):
             if t == 0:
-                items = compute_svg_frame_init(self.nodes, t)
+                items = compute_svg_frame_init(self.data, t)
             elif t == 1 or t == 2:
-                items = compute_svg_frame_phase_a(self.nodes, lamb, b_subtree, vars, t)
+                items = compute_svg_frame_phase_a(self.data, redex, b_subtree, vars, t)
             elif t == 3 or t == 4:
                 items = compute_svg_frame_phase_b(
-                    self.nodes, lamb, b_subtree, new_nodes, t
+                    self.data, redex, b_subtree, new_nodes, t
                 )
             else:
                 items = compute_svg_frame_final(new_nodes, t)
@@ -104,6 +106,7 @@ class Term:
         figure_id = uuid.uuid4()
         box_id = f"lambda_box_{figure_id}".replace("-", "")
         grouped = ShapeAnim.group_by_key(frame_data)
+        print(grouped.keys())
         anims = [ShapeAnim.from_frames(frames, duration) for frames in grouped.values()]
         anims.sort(key=lambda a: a.zindex)
         anim_elements = [
@@ -114,10 +117,10 @@ class Term:
         anim_elements.append(
             Rect(
                 id=box_id,
-                x=f"{-width}",
-                y="0",
-                width="100%",
-                height="100%",
+                x=-width,
+                y=0,
+                width=Length(100, "%"),
+                height=Length(100, "%"),
                 fill="transparent",
             )
         )
@@ -126,7 +129,7 @@ class Term:
         H = height * 40
         anim_svg = SVG(
             xmlns="http://www.w3.org/2000/svg",
-            viewBox=f"{-width} 0 {2 * width} {height}",
+            viewBox=ViewBoxSpec(-width, 0, 2 * width, height),
             style=f"max-height:{H}px",
             elements=anim_elements,
         ).as_str()
@@ -140,11 +143,11 @@ class Term:
             "</div>"
         )
 
-    def _repr_html_(self, x0=-10):
-        frame = sorted(compute_svg_frame_init(self.nodes), key=lambda x: x.zindex)
+    def _repr_html_(self):
+        frame = sorted(compute_svg_frame_init(self.data), key=lambda x: x.zindex)
 
-        width = (1 << (1 + log2(count_variables(self.nodes)))) + 4
-        height = compute_height(self.nodes) + 1
+        width = (1 << (1 + log2(count_variables(self.data)))) + 4
+        height = compute_height(self.data) + 1
 
         elements = [ShapeAnim.from_single_frame(x) for x in frame]
 
@@ -152,13 +155,12 @@ class Term:
         H = height * 40
         W = width * 40
 
-        svg_element = SVG(
+        return SVG(
             xmlns="http://www.w3.org/2000/svg",
-            viewBox=f"{-1} 0 {width} {height}",  # type: ignore
+            viewBox=ViewBoxSpec(-1, 0, width, height),
             elements=elements,
             style=f"max-height:{H}px; margin-left: clamp(0px, calc(100% - {W}px), 100px)",
         ).as_str()
-        return f"<div>{svg_element}</div>"
 
 
 def offset_var(x: Union[int, str], offset: int) -> Union[int, str]:
@@ -190,11 +192,12 @@ class L:
                 self.args.append((offset + i, offset + x))
             self.n += t.n
         elif isinstance(t, Term):
-            for i, x in t.nodes.select("id", "ref").drop_nulls().iter_rows():
+            # fixme: encapsulate
+            for i, x in t.data.nodes.select("id", "ref").drop_nulls().iter_rows():
                 self.refs.append((offset + i, offset + x))
-            for i, x in t.nodes.select("id", "arg").drop_nulls().iter_rows():
+            for i, x in t.data.nodes.select("id", "arg").drop_nulls().iter_rows():
                 self.args.append((offset + i, offset + x))
-            self.n += len(t.nodes)
+            self.n += len(t.data.nodes)
         else:
             assert isinstance(t, str)
             self.refs.append((self.n, t))
@@ -243,7 +246,7 @@ class L:
             .join(ref, on="id", how="left")
             .join(arg, on="id", how="left")
         ).with_columns(bid=pl.struct(major="id", minor="id"))
-        return Term(data)
+        return Term(AbstractTerm(data))
 
 
 def V(name: str) -> L:
