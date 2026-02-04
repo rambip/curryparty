@@ -63,7 +63,7 @@ SCHEMA = Schema(
         "id": UInt32,
         "ref": UInt32,
         "arg": UInt32,
-        "bid": pl.Struct({"major": UInt32, "minor": UInt32}),
+        "bid": pl.Struct({"stump": UInt32, "local": UInt32}),
     },
 )
 
@@ -120,11 +120,11 @@ class Node[NodeId]:
 
 
 def _generate_bi_identifier(
-    major_name: str, minor_name: str, minor_replacement=pl.lit(None)
+    stump_name: str, local_name: str, local_replacement=pl.lit(None)
 ):
     return pl.struct(
-        major=pl.col(major_name).fill_null(pl.col(minor_name)),
-        minor=minor_replacement.fill_null(pl.col(minor_name)),
+        stump=pl.col(stump_name).fill_null(pl.col(local_name)),
+        local=local_replacement.fill_null(pl.col(local_name)),
     )
 
 
@@ -132,9 +132,7 @@ class AbstractTerm:
     nodes: pl.DataFrame
 
     def __init__(self, nodes: pl.DataFrame | pl.LazyFrame):
-        assert nodes.schema == SCHEMA, (
-            f"{nodes.schema} is different from expected {SCHEMA}"
-        )
+        nodes = nodes.match_to_schema(SCHEMA)
         if isinstance(nodes, pl.LazyFrame):
             self.nodes = nodes.collect()
         else:
@@ -158,10 +156,10 @@ class AbstractTerm:
         return Node(
             ref=ref,
             children=children,
-            previous=bid["minor"] if bid is not None else None,
-            previous_stump=bid["major"]
+            previous=bid["local"] if bid is not None else None,
+            previous_stump=bid["stump"]
             # FIXME: use join on nulls
-            if bid is not None and bid["minor"] != bid["major"]
+            if bid is not None and bid["stump"] != bid["local"]
             else None,
         )
 
@@ -237,47 +235,47 @@ class AbstractTerm:
         """
         lamb = redex + 1
         a = redex + 2
-        b = self.node(redex).get_arg()
-        assert b is not None
+        id_subst = self.node(redex).get_arg()
+        assert id_subst is not None
 
-        vars = (
+        stumps = (
             self.nodes.lazy().filter(pl.col("ref") == lamb).select("id", replaced=True)
         )
 
-        b_subtree_range = self._get_subtree(b)
-        b_subtree = self.nodes.lazy().filter(
+        b_subtree_range = self._get_subtree(id_subst)
+        subst = self.nodes.lazy().filter(
             pl.col("id").is_between(
                 b_subtree_range.start, b_subtree_range.stop, closed="left"
             )
         )
 
-        b_subtree_duplicated = b_subtree.join(vars, how="cross", suffix="_major")
+        subst_duplicated = subst.join(stumps, how="cross", suffix="_stump")
         rest_of_nodes = (
             self.nodes.lazy()
-            .join(b_subtree, on="id", how="anti")
+            .join(subst, on="id", how="anti")
             .with_columns(arg=pl.col("arg").replace(redex, a))
         )
 
         new_nodes = (
             pl.concat(
-                [b_subtree_duplicated, rest_of_nodes],
+                [subst_duplicated, rest_of_nodes],
                 how="diagonal",
             )
-            .join(vars, left_on="id", right_on="id", how="anti")
-            .join(vars, left_on="arg", right_on="id", how="left", suffix="_arg")
-            .join(vars, left_on="ref", right_on="id", how="left", suffix="_ref")
+            .join(stumps, left_on="id", right_on="id", how="anti")
+            .join(stumps, left_on="arg", right_on="id", how="left", suffix="_arg")
+            .join(stumps, left_on="ref", right_on="id", how="left", suffix="_ref")
             .filter(
                 ~(pl.col("id").eq(redex) | pl.col("id").eq(lamb)),
             )
             .select(
-                bid=_generate_bi_identifier("id_major", "id"),
-                bid_ref=_generate_bi_identifier("id_major", "ref"),
-                bid_ref_fallback=pl.struct(major="ref", minor="ref"),
+                bid=_generate_bi_identifier("id_stump", "id"),
+                bid_ref=_generate_bi_identifier("id_stump", "ref"),
+                bid_ref_fallback=pl.struct(stump="ref", local="ref"),
                 bid_arg=_generate_bi_identifier(
                     # TODO: document and simplify to avoid "minor_replacement"
-                    "id_major",
+                    "id_stump",
                     "arg",
-                    minor_replacement=pl.when("replaced_arg").then(b),
+                    local_replacement=pl.when("replaced_arg").then(id_subst),
                 ),
             )
             .sort("bid")

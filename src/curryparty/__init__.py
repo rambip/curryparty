@@ -106,7 +106,6 @@ class Term:
         figure_id = uuid.uuid4()
         box_id = f"lambda_box_{figure_id}".replace("-", "")
         grouped = ShapeAnim.group_by_key(frame_data)
-        print(grouped.keys())
         anims = [ShapeAnim.from_frames(frames, duration) for frames in grouped.values()]
         anims.sort(key=lambda a: a.zindex)
         anim_elements = [
@@ -245,7 +244,7 @@ class L:
             .to_frame()
             .join(ref, on="id", how="left")
             .join(arg, on="id", how="left")
-        ).with_columns(bid=pl.struct(major="id", minor="id"))
+        ).with_columns(bid=None)
         return Term(AbstractTerm(data))
 
 

@@ -270,7 +270,6 @@ def compute_svg_frame_phase_b(
             previous_arg = node_arg.previous
 
             arg = (stump_arg, previous_arg) if stump_arg is not None else previous_arg
-            print(f"arg: {arg}")
         yield from draw(
             x,
             y,
