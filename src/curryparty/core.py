@@ -60,6 +60,8 @@ from typing import Generator, List, NewType, Optional
 import polars as pl
 from polars import Schema, UInt32
 
+from .term import Term, Var, Lam, App
+
 __all__ = ["AbstractTerm", "NodeId"]
 
 # See `Node`
@@ -136,6 +138,67 @@ class AbstractTerm:
 
     def root(self) -> NodeId:
         return NodeId(0)
+
+    @classmethod
+    def from_term(cls, term: Term) -> AbstractTerm:
+        nodes: list[dict] = []
+        context: list[int] = []
+
+        def convert(t: Term) -> int:
+            if isinstance(t, Var):
+                if t.index < len(context):
+                    ref = context[-(t.index + 1)]
+                else:
+                    ref = None
+                node_id = len(nodes)
+                nodes.append({"id": node_id, "ref": ref, "arg": None, "prev": None})
+                return node_id
+            elif isinstance(t, Lam):
+                context.append(len(nodes))
+                func = convert(t.body)
+                context.pop()
+                node_id = len(nodes)
+                nodes.append({"id": node_id, "ref": None, "arg": func, "prev": None})
+                return node_id
+            elif isinstance(t, App):
+                func = convert(t.func)
+                arg = convert(t.arg)
+                func_id = len(nodes)
+                nodes.append({"id": func_id, "ref": None, "arg": arg, "prev": None})
+                return func_id
+            else:
+                raise ValueError(f"Unknown term type: {type(t)}")
+
+        convert(term)
+        df = pl.DataFrame(nodes, schema=SCHEMA)
+        return cls(df)
+
+    def to_term(self) -> Term:
+        nodes = self.nodes.to_dicts()
+        n = len(nodes)
+
+        def build(node_id: int, context: list[int]) -> Term:
+            node = nodes[node_id]
+            ref = node["ref"]
+            arg = node["arg"]
+
+            if ref is not None:
+                if ref in context:
+                    return Var(context.index(ref))
+                else:
+                    return Var(len(context))
+            elif arg is not None:
+                if node_id + 1 == arg:
+                    body = build(arg, context + [node_id])
+                    return Lam(body)
+                else:
+                    func = build(node_id, context)
+                    arg_term = build(arg, context)
+                    return App(func, arg_term)
+            else:
+                return Var(len(context))
+
+        return build(0, [])
 
     def node(self, node_id: NodeId):
         """

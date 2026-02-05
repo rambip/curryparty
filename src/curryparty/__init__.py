@@ -3,7 +3,7 @@
 This library is intended to be used in an interactive
 """
 
-from typing import Iterable, List, Optional, Union
+from typing import Iterable, Optional, Union
 
 try:
     import polars as pl
@@ -24,9 +24,10 @@ from .display import (
     compute_svg_frame_phase_b,
     count_variables,
 )
+from .term import Term, app, lam, var
 from .utils import ShapeAnim, ShapeAnimFrame
 
-__all__ = ["L", "V"]
+__all__ = ["L", "o"]
 
 
 def log2(n):
@@ -37,20 +38,20 @@ def log2(n):
     return 1 + log2(n // 2)
 
 
-class Term:
+class LambdaTerm:
     def __init__(self, data: AbstractTerm):
         self.data = data
 
-    def __call__(self, other: "Term") -> "Term":
-        return Term((self.data)(other.data))
+    def __call__(self, other: "LambdaTerm") -> "LambdaTerm":
+        return LambdaTerm((self.data)(other.data))
 
-    def beta(self) -> Optional["Term"]:
+    def beta(self) -> Optional["LambdaTerm"]:
         candidates = self.data.find_redexes()
         redex = next(candidates, None)
         if redex is None:
             return None
         reduced = self.data.beta_reduce(redex)
-        return Term(reduced)
+        return LambdaTerm(reduced)
 
     def reduce(self):
         last_non_reduced = self
@@ -58,7 +59,7 @@ class Term:
             last_non_reduced = term
         return last_non_reduced
 
-    def reduction_chain(self) -> Iterable["Term"]:
+    def reduction_chain(self) -> Iterable["LambdaTerm"]:
         term = self
         while term is not None:
             yield term
@@ -162,94 +163,226 @@ class Term:
         ).as_str()
 
 
-def offset_var(x: Union[int, str], offset: int) -> Union[int, str]:
-    if isinstance(x, int):
-        return x + offset
-    return x
+# Type alias for clarity
+BuilderArg = Union[str, "L", "Application", Term, LambdaTerm]
+
+
+class Application:
+    """
+    Represents a pending application that will be resolved in context.
+
+    This is returned by o() when used standalone, and allows writing:
+        L("f").o("x", o("y", "z"))
+    where o("y", "z") creates an Application that gets resolved in f's context.
+    """
+
+    def __init__(self, *args: BuilderArg):
+        self.args = args
+
+
+def o(*args: BuilderArg) -> Application:
+    """
+    Create an application expression.
+
+    This is meant to be used inside L(...).o(...) contexts:
+        L("f", "x").o("f", o("f", "x"))  # λf. λx. f (f x)
+
+    The o("f", "x") creates an Application that will be resolved
+    in the context of the enclosing lambda.
+
+    Args:
+        *args: Variable names, lambda builders, nested applications, or Terms
+
+    Returns:
+        An Application object that will be resolved in context
+    """
+    if len(args) == 0:
+        raise ValueError("o() requires at least one argument")
+
+    return Application(*args)
 
 
 class L:
-    def __init__(self, *lambda_names):
-        self.n = len(lambda_names)
-        self.lambdas = {x: i for (i, x) in enumerate(lambda_names)}
-        self.refs: List[tuple[int, Union[int, str]]] = []
-        self.args = []
-        self.last_ = None
+    """
+    Builder for lambda calculus terms with deferred evaluation.
 
-    def lamb(self, name: str) -> "L":
-        self.n += 1
-        self.lambdas[name] = self.n
+    The key insight: We don't resolve variable names to De Bruijn indices
+    until build() is called. This allows nested lambdas to reference outer
+    variables correctly.
+
+    Supports:
+    - Multiple lambda bindings: L("x", "y", "z")
+    - Variable references: L("x").o("x")
+    - Applications: L("f").o("x", "y") applies f to x, then to y
+    - Nested applications: L("f").o("x", o("y", "z"))
+    - Nested lambdas: L("x").o(L("y").o("x"))
+    - Shorthand for body: L("x")._("x") same as L("x").o("x")
+    """
+
+    def __init__(self, *names: str):
+        """
+        Create a lambda builder with bound variable names.
+
+        Args:
+            *names: Variable names to bind (creates nested lambdas)
+                   L("x", "y") creates λx. λy. ...
+        """
+        self.names = list(names)
+        # Store the body as raw BuilderArgs, not resolved Terms
+        self.body_args: list[BuilderArg] = []
+
+    def o(self, *args: BuilderArg) -> "L":
+        """
+        Set the body or apply arguments.
+
+        This method handles:
+        1. Setting the lambda body: L("x").o("x")
+        2. Function application: L("f").o("x", "y") means f(x)(y)
+        3. Nested applications: L("f").o("x", o("y", "z"))
+
+        Args:
+            *args: Variable names (strings), lambda builders (L),
+                  applications (Application from o()), or Terms
+
+        Returns:
+            Self for chaining
+        """
+        if len(args) == 0:
+            raise ValueError("o() requires at least one argument")
+
+        # Store the arguments without resolving them yet
+        self.body_args.extend(args)
         return self
 
-    def _append_subtree_or_subexpression(self, t: Union[str, "L", Term]):
-        offset = self.n
-        if isinstance(t, L):
-            for i, x in t.refs:
-                self.refs.append((offset + i, offset_var(t.lambdas.get(x, x), offset)))
+    def _to_term(self, arg: BuilderArg, context: list[str]) -> Term:
+        """
+        Convert an argument to a Term in the given context.
 
-            for i, x in t.args:
-                self.args.append((offset + i, offset + x))
-            self.n += t.n
-        elif isinstance(t, Term):
-            # fixme: encapsulate
-            for i, x in t.data.nodes.select("id", "ref").drop_nulls().iter_rows():
-                self.refs.append((offset + i, offset + x))
-            for i, x in t.data.nodes.select("id", "arg").drop_nulls().iter_rows():
-                self.args.append((offset + i, offset + x))
-            self.n += len(t.data.nodes)
+        Args:
+            arg: Variable name, lambda builder, application, or Term
+            context: Stack of variable names (innermost last)
+
+        Returns:
+            A Term object
+        """
+        if isinstance(arg, str):
+            # Variable reference - find its De Bruijn index
+            return self._var_to_term(arg, context)
+        elif isinstance(arg, L):
+            # Nested lambda - build it with extended context
+            return arg._build_with_context(context)
+        elif isinstance(arg, Application):
+            # Nested application - resolve in current context
+            return self._application_to_term(arg, context)
+        elif isinstance(arg, Term):
+            return arg
+        elif isinstance(arg, LambdaTerm):
+            return arg.data.to_term()
         else:
-            assert isinstance(t, str)
-            self.refs.append((self.n, t))
-            self.n += 1
+            raise ValueError(f"unknown type for lambda builder: {type(arg)}")
 
-    def _(self, x: Union[str, "L", Term]) -> "L":
-        self.last_ = self.n
-        self._append_subtree_or_subexpression(x)
-        return self
+    def _application_to_term(self, appl: Application, context: list[str]) -> Term:
+        """
+        Convert an Application to a Term in the given context.
 
-    def call(self, arg: Union[str, "L", Term]) -> "L":
-        assert self.last_ is not None
-        self.refs = [
-            (i + 1, offset_var(x, 1)) if i >= self.last_ else (i, x)
-            for (i, x) in self.refs
-        ]
-        self.args = [
-            (i + 1, x + 1) if i >= self.last_ else (i, x) for (i, x) in self.args
-        ]
+        Args:
+            appl: Application object from o()
+            context: Stack of variable names
 
-        self.n += 1
-        self.args.append((self.last_, self.n))
-        self._append_subtree_or_subexpression(arg)
+        Returns:
+            A Term representing the application
+        """
+        result: Term | None = None
+        for arg in appl.args:
+            term = self._to_term(arg, context)
+            if result is None:
+                result = term
+            else:
+                result = app(result, term)
 
-        return self
+        if result is None:
+            raise ValueError("Application produced no result")
 
-    def build(self) -> "Term":
-        def bind_var(x: Union[str, int]) -> int:
-            # check that all remaining unbound variables are bound to this lambda
-            if isinstance(x, int):
-                return x
-            if x not in self.lambdas:
-                raise ValueError(f"variable {x} is not bound to any lambda")
-            return self.lambdas[x]
+        return result
 
-        self.refs = [(i, bind_var(x)) for i, x in self.refs]
-        ref = pl.from_records(
-            self.refs, orient="row", schema={"id": pl.UInt32, "ref": pl.UInt32}
+    def _var_to_term(self, name: str, context: list[str]) -> Term:
+        """
+        Convert a variable name to a Var term with De Bruijn index.
+
+        Searches from innermost to outermost lambda to find the binding.
+
+        Args:
+            name: Variable name to look up
+            context: Stack of variable names (innermost last)
+
+        Returns:
+            Var term with appropriate De Bruijn index
+        """
+        # Search from the end (innermost lambda) backwards
+        for i in range(len(context) - 1, -1, -1):
+            if context[i] == name:
+                # Found it! Calculate De Bruijn index
+                # Distance from end of list
+                index = len(context) - 1 - i
+                return var(index)
+
+        # Not found in current scope
+        raise ValueError(
+            f"Variable '{name}' not bound in current lambda scope: {context}"
         )
-        arg = pl.from_records(
-            self.args, orient="row", schema={"id": pl.UInt32, "arg": pl.UInt32}
-        )
-        data = (
-            pl.Series("id", range(self.n), dtype=pl.UInt32)
-            .to_frame()
-            .join(ref, on="id", how="left")
-            .join(arg, on="id", how="left")
-        ).with_columns(prev=None)
-        return Term(AbstractTerm(data))
 
+    def _build_with_context(self, outer_context: list[str]) -> Term:
+        """
+        Build this lambda term with outer variable context.
 
-def V(name: str) -> L:
-    return L()._(name)
+        This is the KEY method that fixes the scoping issue.
+        We pass down the outer context so nested lambdas can reference
+        outer variables.
+
+        Args:
+            outer_context: Variable names from outer lambdas
+
+        Returns:
+            Complete Term with correct De Bruijn indices
+        """
+        # Create extended context: outer + our names
+        full_context = outer_context + self.names
+
+        # Build body with full context
+        if len(self.body_args) == 0:
+            raise ValueError(
+                "Cannot build lambda without a body. Use .o(...) to set the body."
+            )
+
+        # Convert body args to terms
+        result: Term | None = None
+        for arg in self.body_args:
+            term = self._to_term(arg, full_context)
+            if result is None:
+                result = term
+            else:
+                result = app(result, term)
+
+        if result is None:
+            raise ValueError("Body produced no result")
+
+        # Wrap in lambdas for our names
+        for _ in self.names:
+            result = lam(result)
+
+        return result
+
+    def build(self) -> LambdaTerm:
+        """
+        Build the actual Term from this builder.
+
+        This is when variable resolution happens!
+
+        Returns:
+            The complete lambda term wrapped in LambdaTerm
+        """
+        result = self._build_with_context([])
+        return LambdaTerm(AbstractTerm.from_term(result))
 
 
 class Html:
