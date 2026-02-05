@@ -100,7 +100,7 @@ class LambdaTerm:
         candidates = self.data.find_redexes()
         redex = next(candidates, None)
         if redex is None:
-            return self._repr_html_()
+            return None
 
         lamb = self.data.node(redex).get_left()
         assert lamb is not None
