@@ -43,8 +43,12 @@ The operation of "beta-reduction" transforms a Redex inside the Term, leaving th
     The beta-reduction of a Term on a Redex R consists in 2 steps:
 
 5.1 Beta-reduction replaces all stumps by a copy of the substitute
-5.2 Beta-reduction remove the redex node, the lambda node and the substitute.
-    All we have left is the trunk, and it is placed where the original redex was.
+5.1.1 If an application had a stump node as one of its children, the stump node is replaced by a copy of the substitute.
+5.1.2 All variables in the substitute are now bound to the corresponding duplicated lambda in their duplicated substitute.
+    But if a variable was bound to a lambda higher in the tree (not in the substitute), the bound remains
+5.2 Beta-reduction removes the redex node and the lambda node
+5.3 Beta-reduction removes the substitute (it has already been duplicated for each stump)
+5.4 All we have left is the trunk, and it is placed where the original redex was.
 
 """
 
@@ -58,13 +62,11 @@ from polars import Schema, UInt32
 
 __all__ = ["AbstractTerm", "NodeId"]
 
+# See `Node`
+PREV_ID_SCHEMA = {"stump": UInt32, "local": UInt32}
+
 SCHEMA = Schema(
-    {
-        "id": UInt32,
-        "ref": UInt32,
-        "arg": UInt32,
-        "bid": pl.Struct({"stump": UInt32, "local": UInt32}),
-    },
+    {"id": UInt32, "ref": UInt32, "arg": UInt32, "prev": pl.Struct(PREV_ID_SCHEMA)},
 )
 
 
@@ -73,7 +75,7 @@ def _shift(nodes: pl.DataFrame, offset: int):
         pl.col("id") + offset,
         pl.col("ref") + offset,
         pl.col("arg") + offset,
-        bid=None,
+        prev=None,
     )
 
 
@@ -105,7 +107,7 @@ class Node[NodeId]:
 
     ref: Optional[NodeId]
     children: List[NodeId]
-    previous: NodeId
+    previous_local: NodeId
     previous_stump: NodeId
 
     def get_arg(self) -> Optional[NodeId]:
@@ -118,14 +120,8 @@ class Node[NodeId]:
             return None
         return self.children[0]
 
-
-def _generate_bi_identifier(
-    stump_name: str, local_name: str, local_replacement=pl.lit(None)
-):
-    return pl.struct(
-        stump=pl.col(stump_name).fill_null(pl.col(local_name)),
-        local=local_replacement.fill_null(pl.col(local_name)),
-    )
+    def previous(self):
+        return (self.previous_local, self.previous_stump)
 
 
 class AbstractTerm:
@@ -146,7 +142,7 @@ class AbstractTerm:
         Get a node in the expression tree by id
         """
 
-        id, ref, arg, bid = self.nodes.row(node_id)
+        id, ref, arg, prev = self.nodes.row(node_id)
         children = []
         if ref is None:
             children.append(id + 1)
@@ -156,11 +152,8 @@ class AbstractTerm:
         return Node(
             ref=ref,
             children=children,
-            previous=bid["local"] if bid is not None else None,
-            previous_stump=bid["stump"]
-            # FIXME: use join on nulls
-            if bid is not None and bid["stump"] != bid["local"]
-            else None,
+            previous_local=prev["local"] if prev else None,
+            previous_stump=prev["stump"] if prev else None,
         )
 
     def find_variables(self, lamb: NodeId) -> Generator[NodeId]:
@@ -238,69 +231,96 @@ class AbstractTerm:
         id_subst = self.node(redex).get_arg()
         assert id_subst is not None
 
-        stumps = (
-            self.nodes.lazy().filter(pl.col("ref") == lamb).select("id", replaced=True)
-        )
+        # see 4.3
+        stumps = self.nodes.lazy().filter(pl.col("ref") == lamb).select("id")
 
-        b_subtree_range = self._get_subtree(id_subst)
+        # see 4.4
+        subst_range = self._get_subtree(id_subst)
         subst = self.nodes.lazy().filter(
-            pl.col("id").is_between(
-                b_subtree_range.start, b_subtree_range.stop, closed="left"
-            )
+            pl.col("id").is_between(subst_range.start, subst_range.stop, closed="left")
         )
 
-        subst_duplicated = subst.join(stumps, how="cross", suffix="_stump")
-        rest_of_nodes = (
-            self.nodes.lazy()
-            .join(subst, on="id", how="anti")
-            .with_columns(arg=pl.col("arg").replace(redex, a))
+        # we start duplicating
+        new_trunks = subst.join(stumps, how="cross", suffix="_stump").select(
+            "id",
+            "id_stump",
+            prev=pl.struct(stump="id_stump", local="id"),
+            prev_arg=pl.struct(stump="id_stump", local="arg"),
+            prev_ref=pl.struct(stump="id_stump", local="ref"),
+            # TODO: explain the logic for variables that are not bound inside the redex
+            prev_ref_unbound=pl.struct(stump=None, local="ref", schema=PREV_ID_SCHEMA),
         )
 
         new_nodes = (
-            pl.concat(
-                [subst_duplicated, rest_of_nodes],
-                how="diagonal",
-            )
-            .join(stumps, left_on="id", right_on="id", how="anti")
-            .join(stumps, left_on="arg", right_on="id", how="left", suffix="_arg")
-            .join(stumps, left_on="ref", right_on="id", how="left", suffix="_ref")
+            self.nodes.lazy()
+            # remove the information about the previous iteration
+            .select(pl.exclude("prev"))
+            # See 5.2
             .filter(
                 ~(pl.col("id").eq(redex) | pl.col("id").eq(lamb)),
             )
+            # See 5.3
+            .join(subst, left_on="id", right_on="id", how="anti")
+            # See 5.4
+            .with_columns(arg=pl.col("arg").replace(redex, a))
+            .join(
+                # 5.1.1 we check if the argument is a stump
+                stumps.select("id", arg_is_stump=True),
+                left_on="arg",
+                right_on="id",
+                how="left",
+                maintain_order="left",
+            )
+            # See 5.1
+            .join(
+                new_trunks,
+                left_on="id",
+                right_on="id_stump",
+                how="left",
+                maintain_order="left",
+            )
             .select(
-                bid=_generate_bi_identifier("id_stump", "id"),
-                bid_ref=_generate_bi_identifier("id_stump", "ref"),
-                bid_ref_fallback=pl.struct(stump="ref", local="ref"),
-                bid_arg=_generate_bi_identifier(
-                    # TODO: document and simplify to avoid "minor_replacement"
-                    "id_stump",
-                    "arg",
-                    local_replacement=pl.when("replaced_arg").then(id_subst),
+                pl.col("prev").fill_null(pl.struct(stump=None, local="id")),
+                pl.col("prev_ref").fill_null(pl.struct(stump=None, local="ref")),
+                pl.col("prev_ref_unbound"),
+                # 5.1.1
+                pl.col("prev_arg").fill_null(
+                    pl.when(pl.col("arg_is_stump"))
+                    .then(pl.struct(stump="arg", local=id_subst))
+                    .otherwise(pl.struct(stump=None, local="arg"))
                 ),
             )
-            .sort("bid")
             .with_row_index("id")
         ).cache()
 
+        # renumbering step: we replace each "previous location" with the new id
         out = (
             new_nodes.join(
-                new_nodes.select(bid_ref="bid", ref="id"),
-                on="bid_ref",
+                new_nodes.select(prev_ref="prev", ref="id"),
+                on="prev_ref",
                 how="left",
                 maintain_order="left",
+                nulls_equal=True,
             )
             .join(
-                new_nodes.select(bid_ref_fallback="bid", ref_fallback="id"),
-                on="bid_ref_fallback",
+                new_nodes.select(prev_ref_unbound="prev", ref_unbound="id"),
+                on="prev_ref_unbound",
                 how="left",
                 maintain_order="left",
+                nulls_equal=True,
             )
             .join(
-                new_nodes.select(bid_arg="bid", arg="id"),
-                on="bid_arg",
+                new_nodes.select(prev_arg="prev", arg="id"),
+                on="prev_arg",
                 how="left",
                 maintain_order="left",
+                nulls_equal=True,
             )
-            .select("id", ref=pl.coalesce("ref", "ref_fallback"), arg="arg", bid="bid")
+            .select(
+                "id",
+                ref=pl.coalesce("ref", "ref_unbound"),  # 5.1.2
+                arg="arg",
+                prev="prev",
+            )
         ).collect()
         return AbstractTerm(out)

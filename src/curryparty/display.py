@@ -1,4 +1,4 @@
-from typing import Any, Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple, TypeAlias
 
 import svg
 
@@ -12,15 +12,17 @@ def compute_height(term: AbstractTerm):
 
 
 def count_variables(term: AbstractTerm):
-    # TODO: more efficient
     return sum(1 for x in term.get_subtree(term.root()) if term.node(x).ref is not None)
+
+
+Loc: TypeAlias = Tuple[NodeId, Optional[NodeId]]
 
 
 def compute_layout(
     term: AbstractTerm, lamb: Optional[NodeId] = None, replaced_var_width=1
-) -> tuple[dict[NodeId, Interval], dict[NodeId, Interval]]:
-    y = {term.root(): Interval((0, 0))}
-    x = {}
+) -> tuple[dict[Loc, Interval], dict[Loc, Interval]]:
+    y: dict[Loc, Interval] = {(term.root(), None): Interval((0, 0))}
+    x: dict[Loc, Interval] = {}
     nodes = list(term.get_subtree(term.root()))
     for node_id in nodes:
         node = term.node(node_id)
@@ -31,10 +33,12 @@ def compute_layout(
         child = term.node(node_id).get_left()
         assert child is not None
         if arg is not None:
-            y[child] = y[node_id].shift(0 if term.node(child).get_arg() is None else 1)
-            y[arg] = y[node_id].shift(0)
+            y[child, None] = y[node_id, None].shift(
+                0 if term.node(child).get_arg() is None else 1
+            )
+            y[arg, None] = y[node_id, None].shift(0)
         else:
-            y[child] = y[node_id].shift(1)
+            y[child, None] = y[node_id, None].shift(1)
 
     next_var_x = count_variables(term) - 1
 
@@ -44,25 +48,26 @@ def compute_layout(
         arg = node.get_arg()
         if ref is not None:
             width = replaced_var_width if ref == lamb else 1
-            x[node_id] = Interval((next_var_x - width + 1, next_var_x))
+            x[node_id, None] = Interval((next_var_x - width + 1, next_var_x))
             next_var_x -= width
-            x[ref] = x[node_id] | x.get(ref, Interval(None))
+            x[ref, None] = x[node_id, None] | x.get((ref, None), Interval(None))
 
         else:
             child = term.node(node_id).get_left()
             assert child is not None
-            x[node_id] = x[child] | x.get(node_id, Interval(None))
-            y[node_id] = y[child] | y[node_id]
+            x[node_id, None] = x[child, None] | x.get((node_id, None), Interval(None))
+            y[node_id, None] = y[child, None] | y[node_id, None]
+
     return x, y
 
 
 def draw(
-    x: dict[NodeId, Interval],
-    y: dict[NodeId, Interval],
-    i_node: NodeId,
-    ref: Optional[NodeId],
-    arg: Optional[NodeId],
-    key: Any,
+    x: dict[Loc, Interval],
+    y: dict[Loc, Interval],
+    i_node: Loc,
+    ref: Optional[Loc],
+    arg: Optional[Loc],
+    key: Loc,
     idx: int,
     replaced=False,
     removed=False,
@@ -179,7 +184,15 @@ def compute_svg_frame_init(
         node = term.node(node_id)
         ref = node.ref
         arg = node.get_arg()
-        yield from draw(x, y, node_id, ref, arg, key=node_id, idx=idx)
+        yield from draw(
+            x,
+            y,
+            (node_id, None),
+            (ref, None) if ref is not None else None,
+            (arg, None) if arg is not None else None,
+            key=(node_id, None),
+            idx=idx,
+        )
 
 
 def compute_svg_frame_phase_a(
@@ -203,10 +216,10 @@ def compute_svg_frame_phase_a(
         yield from draw(
             x,
             y,
-            node_id,
-            ref,
-            arg,
-            key=node_id,
+            (node_id, None),
+            (ref, None) if ref is not None else None,
+            (arg, None) if arg is not None else None,
+            key=(node_id, None),
             idx=idx,
             replaced=replaced,
             removed=(node_id == lamb or node_id == redex),
@@ -217,8 +230,16 @@ def compute_svg_frame_phase_a(
             local_node = term.node(local_id)
             ref = local_node.ref
             arg = local_node.get_arg()
-            key = (stump, local_id)
-            yield from draw(x, y, local_id, ref, arg, key=key, idx=idx)
+            key = (local_id, stump)
+            yield from draw(
+                x,
+                y,
+                (local_id, None),
+                (ref, None) if ref is not None else None,
+                (arg, None) if arg is not None else None,
+                key=key,
+                idx=idx,
+            )
 
 
 def compute_svg_frame_phase_b(
@@ -234,48 +255,31 @@ def compute_svg_frame_phase_b(
     b = term.node(redex).get_arg()
     assert b is not None
     x, y = compute_layout(term, lamb=lamb, replaced_var_width=b_width)
-    b_x = x[b][0]
-    b_y = y[b][0]
+    b_x = x[b, None][0]
+    b_y = y[b, None][0]
     for node_id in reduced.get_subtree(reduced.root()):
         node = reduced.node(node_id)
-        previous = node.previous
+        local = node.previous_local
         stump = node.previous_stump
         if stump is not None:
-            delta_x = x[stump][0] - b_x
-            delta_y = y[stump][0] - b_y + 1
-            x[(stump, previous)] = x[previous].shift(delta_x)
-            y[(stump, previous)] = y[previous].shift(delta_y)
+            delta_x = x[stump, None][0] - b_x
+            delta_y = y[stump, None][0] - b_y + 1
+            x[local, stump] = x[local, None].shift(delta_x)
+            y[local, stump] = y[local, None].shift(delta_y)
 
     for node_id in reduced.get_subtree(reduced.root()):
         node = reduced.node(node_id)
         new_ref = node.ref
         new_arg = node.get_arg()
-        stump = node.previous_stump
-        previous = node.previous
 
-        key = (stump, previous) if stump is not None else previous
+        key = node.previous()
 
-        if new_ref is None:
-            ref = None
-        else:
-            node_ref = reduced.node(new_ref)
-            stump_ref = node_ref.previous_stump
-            previous_ref = node_ref.previous
-            ref = (stump_ref, previous_ref) if stump_ref is not None else previous_ref
-        if new_arg is None:
-            arg = None
-        else:
-            node_arg = reduced.node(new_arg)
-            stump_arg = node_arg.previous_stump
-            previous_arg = node_arg.previous
-
-            arg = (stump_arg, previous_arg) if stump_arg is not None else previous_arg
         yield from draw(
             x,
             y,
             key,
-            ref,
-            arg,
+            ref=reduced.node(new_ref).previous() if new_ref else None,
+            arg=reduced.node(new_arg).previous() if new_arg else None,
             key=key,
             idx=idx,
         )
@@ -289,7 +293,13 @@ def compute_svg_frame_final(
         node = reduced.node(node_id)
         ref = node.ref
         arg = node.get_arg()
-        stump = node.previous_stump
-        previous = node.previous
-        key = (stump, previous) if stump is not None else previous
-        yield from draw(x, y, node_id, ref, arg, key, idx=idx)
+        key = node.previous()
+        yield from draw(
+            x,
+            y,
+            (node_id, None),
+            (ref, None) if ref is not None else None,
+            (arg, None) if arg is not None else None,
+            key,
+            idx=idx,
+        )

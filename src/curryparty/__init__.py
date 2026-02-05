@@ -244,7 +244,7 @@ class L:
             .to_frame()
             .join(ref, on="id", how="left")
             .join(arg, on="id", how="left")
-        ).with_columns(bid=None)
+        ).with_columns(prev=None)
         return Term(AbstractTerm(data))
 
 
