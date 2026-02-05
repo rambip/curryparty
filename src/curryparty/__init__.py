@@ -65,6 +65,32 @@ class LambdaTerm:
             yield term
             term = term.beta()
 
+    def __str__(self) -> str:
+        """Convert to string representation using lambda notation."""
+        from .term import App, Lam, Var
+
+        lambda_counter = [0]  # Global counter for lambda indices
+
+        def pretty(t, lambda_stack=[], paren=False):
+            if isinstance(t, Var):
+                # Get the lambda index this variable refers to
+                if t.index < len(lambda_stack):
+                    lam_idx = lambda_stack[-(t.index + 1)]
+                    return f"x{lam_idx}"
+                return f"x{t.index}"
+            elif isinstance(t, Lam):
+                idx = lambda_counter[0]
+                lambda_counter[0] += 1
+                result = f"λ{idx} {pretty(t.body, lambda_stack + [idx])}"
+                return f"({result})" if paren else result
+            elif isinstance(t, App):
+                func = pretty(t.func, lambda_stack, paren=isinstance(t.func, Lam))
+                arg = pretty(t.arg, lambda_stack, paren=not isinstance(t.arg, Var))
+                return f"{func}({arg})"
+            return str(t)
+
+        return pretty(self.data.to_term())
+
     def show_beta(self, duration=7):
         """
         Generates an HTML representation that toggles visibility between

@@ -14,38 +14,50 @@ Run `pip install curryparty` or `uv add curryparty` depending on your package ma
 # How to use
 
 ```python
-from curryparty import L, V
+from curryparty import L, o
 
-# build expressions idiomatically
-identity = L("x")._("x").build()
+# Build classic lambda calculus expressions
 
-zero = L("f", "x")._("x").build()
+# Identity: λx. x
+identity = L("x").o("x").build()
 
-omega = L("x")._("x").call("x").build()
+# Const (K combinator): λx. λy. x
+const = L("x", "y").o("x").build()
 
-# you can create more complex terms:
+# Omega: λx. x x
+omega = L("x").o("x", "x").build()
+print(omega(omega))  # (λ0 x0(x0))((λ1 x1(x1)))
 
-succ = L("n", "f", "x")._("f").call(
-    V("n").call("f").call("x")
-)
+# Church numerals
+zero = L("f", "x").o("x").build()
+one = L("f", "x").o("f", "x").build()
+two = L("f", "x").o("f", o("f", "x")).build()
 
-# If you try to combine them, nothing will happen:
-bomb = omega(omega)
-one = s(zero)
+succ = L("n", "f", "x").o("f", o("n", "f", "x")).build()
 
-# You need to beta-reduce them:
-bomb.beta()
-one_with_first_reduction = one.beta()
+# S combinator: λf. λg. λx. f x (g x)
+s_comb = L("f", "g", "x").o("f", "x", o("g", "x")).build()
 
-# if you want the final form:
-term = s(zero)
-while term is not None:
-    term = term.beta()
-    print(term)
+# Beta reduction
+# Nothing happens until you reduce:
+app = identity(identity)
+print(app)  # (λ0 x0)((λ1 x1))
 
-# this is equivalent to:
-for x in term.reduction_chain():
-    print(x)
+# Perform one reduction step:
+reduced = app.beta()
+print(reduced)  # λ0 x0
+
+# Multiple reductions:
+term = succ(zero)
+print(f"Steps: {len(list(term.reduction_chain()))}")  # Steps: 3
+
+# Print each step:
+for step in term.reduction_chain():
+    print(step)
+
+# Or get the final result directly:
+result = succ(zero).reduce()
+print(result)  # λ0 λ1 x0(x1) (i.e, one)
 ```
 
 But the main point of this library is the svg-based display system.

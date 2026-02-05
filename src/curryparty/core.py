@@ -60,7 +60,7 @@ from typing import Generator, List, NewType, Optional
 import polars as pl
 from polars import Schema, UInt32
 
-from .term import Term, Var, Lam, App
+from .term import App, Lam, Term, Var
 
 __all__ = ["AbstractTerm", "NodeId"]
 
@@ -138,67 +138,6 @@ class AbstractTerm:
 
     def root(self) -> NodeId:
         return NodeId(0)
-
-    @classmethod
-    def from_term(cls, term: Term) -> AbstractTerm:
-        nodes: list[dict] = []
-        context: list[int] = []
-
-        def convert(t: Term) -> int:
-            if isinstance(t, Var):
-                if t.index < len(context):
-                    ref = context[-(t.index + 1)]
-                else:
-                    ref = None
-                node_id = len(nodes)
-                nodes.append({"id": node_id, "ref": ref, "arg": None, "prev": None})
-                return node_id
-            elif isinstance(t, Lam):
-                context.append(len(nodes))
-                func = convert(t.body)
-                context.pop()
-                node_id = len(nodes)
-                nodes.append({"id": node_id, "ref": None, "arg": func, "prev": None})
-                return node_id
-            elif isinstance(t, App):
-                func = convert(t.func)
-                arg = convert(t.arg)
-                func_id = len(nodes)
-                nodes.append({"id": func_id, "ref": None, "arg": arg, "prev": None})
-                return func_id
-            else:
-                raise ValueError(f"Unknown term type: {type(t)}")
-
-        convert(term)
-        df = pl.DataFrame(nodes, schema=SCHEMA)
-        return cls(df)
-
-    def to_term(self) -> Term:
-        nodes = self.nodes.to_dicts()
-        n = len(nodes)
-
-        def build(node_id: int, context: list[int]) -> Term:
-            node = nodes[node_id]
-            ref = node["ref"]
-            arg = node["arg"]
-
-            if ref is not None:
-                if ref in context:
-                    return Var(context.index(ref))
-                else:
-                    return Var(len(context))
-            elif arg is not None:
-                if node_id + 1 == arg:
-                    body = build(arg, context + [node_id])
-                    return Lam(body)
-                else:
-                    func = build(node_id, context)
-                    arg_term = build(arg, context)
-                    return App(func, arg_term)
-            else:
-                return Var(len(context))
-
-        return build(0, [])
 
     def node(self, node_id: NodeId):
         """
@@ -310,7 +249,7 @@ class AbstractTerm:
             prev=pl.struct(stump="id_stump", local="id"),
             prev_arg=pl.struct(stump="id_stump", local="arg"),
             prev_ref=pl.struct(stump="id_stump", local="ref"),
-            # TODO: explain the logic for variables that are not bound inside the redex
+            # 5.1.2
             prev_ref_unbound=pl.struct(stump=None, local="ref", schema=PREV_ID_SCHEMA),
         )
 
@@ -387,3 +326,64 @@ class AbstractTerm:
             )
         ).collect()
         return AbstractTerm(out)
+
+    @staticmethod
+    def from_term(term: Term) -> AbstractTerm:
+        """Convert a Term (De Bruijn) to AbstractTerm (DataFrame)."""
+        rows = []
+        visited = set()
+
+        def build(t: Term, lambdas: List[int]) -> int:
+            """Recursively build nodes. Returns the node id."""
+            # Cycle detection
+            term_id = id(t)
+            if term_id in visited:
+                raise ValueError(f"Cycle detected: term contains itself as a subterm")
+            visited.add(term_id)
+
+            node_id = len(rows)
+
+            if isinstance(t, Var):
+                # Variable: ref points to the lambda it's bound to
+                ref = lambdas[-(t.index + 1)] if t.index < len(lambdas) else None
+                rows.append({"id": node_id, "ref": ref, "arg": None, "prev": None})
+            elif isinstance(t, Lam):
+                # Lambda: ref=None, arg=None, child is implicitly at node_id+1
+                rows.append({"id": node_id, "ref": None, "arg": None, "prev": None})
+                build(t.body, lambdas + [node_id])
+            elif isinstance(t, App):
+                # Application: ref=None, arg points to argument, func is at node_id+1
+                rows.append({"id": node_id, "ref": None, "arg": None, "prev": None})
+                build(t.func, lambdas)
+                arg_id = build(t.arg, lambdas)
+                rows[node_id]["arg"] = arg_id
+
+            visited.remove(term_id)
+            return node_id
+
+        build(term, [])
+        return AbstractTerm(pl.DataFrame(rows, schema=SCHEMA))
+
+    def to_term(self) -> Term:
+        """Convert AbstractTerm (DataFrame) to Term (De Bruijn)."""
+
+        def build(node_id: NodeId, lambdas: List[NodeId]) -> Term:
+            """Recursively build term from node."""
+            node = self.node(node_id)
+
+            if node.ref is not None:
+                # Variable: compute De Bruijn index from lambda list
+                index = len(lambdas) - 1 - lambdas.index(node.ref)
+                return Var(index)
+            elif node.get_arg() is None:
+                # Lambda: child is at node_id + 1
+                return Lam(build(NodeId(node_id + 1), lambdas + [node_id]))
+            else:
+                # Application: func at node_id + 1, arg stored in node
+                func = build(NodeId(node_id + 1), lambdas)
+                arg_node = node.get_arg()
+                assert arg_node is not None
+                arg = build(arg_node, lambdas)
+                return App(func, arg)
+
+        return build(self.root(), [])

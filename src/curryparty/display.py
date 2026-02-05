@@ -207,8 +207,6 @@ def compute_svg_frame_phase_a(
     b_width = sum(1 for x in b_subtree if term.node(x).ref is not None)
     x, y = compute_layout(term, lamb=lamb, replaced_var_width=b_width)
     for node_id in term.get_subtree(term.root()):
-        if node_id in b_subtree:
-            continue
         node = term.node(node_id)
         ref = node.ref
         arg = node.get_arg()
@@ -273,13 +271,15 @@ def compute_svg_frame_phase_b(
         new_arg = node.get_arg()
 
         key = node.previous()
+        ref = reduced.node(new_ref).previous() if new_ref is not None else None
+        arg = reduced.node(new_arg).previous() if new_arg is not None else None
 
         yield from draw(
             x,
             y,
             key,
-            ref=reduced.node(new_ref).previous() if new_ref else None,
-            arg=reduced.node(new_arg).previous() if new_arg else None,
+            ref=ref,
+            arg=arg,
             key=key,
             idx=idx,
         )
