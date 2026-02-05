@@ -130,7 +130,8 @@ class AbstractTerm:
     nodes: pl.DataFrame
 
     def __init__(self, nodes: pl.DataFrame | pl.LazyFrame):
-        nodes = nodes.match_to_schema(SCHEMA)
+        if hasattr(nodes, "match_to_schema"):
+            nodes = nodes.match_to_schema(SCHEMA)
         if isinstance(nodes, pl.LazyFrame):
             self.nodes = nodes.collect()
         else:
