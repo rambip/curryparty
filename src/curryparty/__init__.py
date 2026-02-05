@@ -71,7 +71,7 @@ class Term:
         """
 
         candidates = self.data.find_redexes()
-        redex = next(candidates)
+        redex = next(candidates, None)
         if redex is None:
             return self._repr_html_()
 
