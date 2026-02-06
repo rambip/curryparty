@@ -1,54 +1,211 @@
+# /// script
+# requires-python = ">=3.13"
+# dependencies = [
+#     "curryparty==0.4.2",
+#     "marimo",
+#     "polars==1.38.0",
+# ]
+# ///
+
 import marimo
 
-__generated_with = "0.19.7"
+__generated_with = "0.19.8"
 app = marimo.App(width="medium")
 
 with app.setup:
     import marimo as mo
-    import polars as pl
 
-    from curryparty import L, V
-
-
-@app.function
-def carousel(elements):
-    return  mo.Html(
-    f"""
-    <script>
-
-    .mo-slide-content {{
-        width: 100%
-    }}
-    </script>
-    {mo.carousel(elements)}
-    """
-)
+    from curryparty import L, o
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _():
-    zero = L("f", "x")._("x").build()
-    omega = L("x")._("x").call("x").build()
-    return omega, zero
+    with open("logo.svg") as f:
+        logo = mo.Html(f.read())
+    logo.center()
+    return
 
 
-@app.cell
-def _(zero):
-    zero
+@app.cell(hide_code=True)
+def _():
+    mo.md(r"""
+    # Lambda-calculus demo
+
+    This notebook showcases the `curryparty` library, a library created to illustrate lambda-calculus in a playful way.
+
+    If you like it, go give a star on github :star:
+
+    https://github.com/rambip/curryparty
+
+    If you want a more thourough introduction, you might like this page:
+
+    https://rambip.github.io/lambda_calc.py.html
+    """)
     return
 
 
 @app.cell
-def _(omega):
+def _():
+    # Basic use
+    # first, create an expression
+    identity_expression = L("x").o("x")
+    # then, build it
+    identity = identity_expression.build()
+    # you can print the classical representation:
+    print(identity)
+
+    # or you can display it as a svg
+    identity
+    return
+
+
+@app.cell
+def _():
+    # church booleans
+    false = L("a", "b").o("a").build()
+    true = L("a", "b").o("b").build()
+    return false, true
+
+
+@app.cell
+def _(false):
+    print(false)
+    false
+    return
+
+
+@app.cell
+def _(true):
+    print(true)
+    true
+    return
+
+
+@app.cell
+def _():
+    # church numerals
+    # a single argument in `o` is a value
+    zero = L("f", "x").o("x").build()
+    # two arguments is a function call
+    one = L("f", "x").o("f", "x").build()
+    # you can use `o` as a function:
+    two = L("f", "x").o("f", o("f", "x")).build()
+    # and so on
+    three = L("f", "x").o("f", o("f", o("f", "x"))).build()
+    return one, three, two, zero
+
+
+@app.cell
+def _(one, three, two, zero):
+    print(zero, one, two, three, sep="  |  ")
+    mo.hstack([zero, one, two, three])
+    return
+
+
+@app.cell
+def _():
+    # successor function
+    succ = L("n", "f", "x").o("f", o("n", "f", "x")).build()
+    succ
+    return (succ,)
+
+
+@app.cell
+def _(false, true):
+    not_ = L("b").o("b", true, false).build()
+    return (not_,)
+
+
+@app.cell
+def _(false, not_):
+    # compose terms
+    print(not_(false))
+    not_(false)
+    return
+
+
+@app.cell
+def _(false, not_):
+    # simplify expressions
+    not_(false).beta()
+    return
+
+
+@app.cell
+def _(false, not_):
+    not_(false).beta().beta()
+    return
+
+
+@app.cell
+def _(false, not_):
+    not_(false).beta().beta().beta()
+    return
+
+
+@app.cell
+def _(false, not_):
+    # the term cannot be reduced anymore
+    print(not_(false).beta().beta().beta().beta())
+    return
+
+
+@app.cell
+def _(false, not_):
+    # show all steps
+    steps = list(not_(false).reduction_chain())
+    mo.vstack(steps)
+    return
+
+
+@app.cell
+def _(false, not_):
+    # jump to the result
+    not_(false).reduce()
+    return
+
+
+@app.cell
+def _(succ, zero):
+    # another example
+    succ(zero)
+    return
+
+
+@app.cell
+def _(one, succ, zero):
+    should_be_one = succ(zero).reduce()
+    assert should_be_one == one
+    should_be_one
+    return
+
+
+@app.cell
+def _(succ, zero):
+    mo.carousel(succ(succ(zero)).reduction_chain())
+    return
+
+
+@app.cell
+def _(succ, zero):
+    # show animations
+    succ(zero).show_beta()
+    return
+
+
+@app.cell
+def _(succ, zero):
+    # show all reductions
+    mo.carousel(x.show_beta() or x for x in succ(zero).reduction_chain())
+    return
+
+
+@app.cell
+def _():
+    omega = L("x").o("x", "x").build()
+    print(omega)
     omega
-    return
-
-
-@app.cell
-def _():
-    s = (L("n", "f", "x")._("f").call(V("n").call("f").call("x"))).build()
-    s
-    return (s,)
+    return (omega,)
 
 
 @app.cell
@@ -59,192 +216,60 @@ def _(omega):
 
 @app.cell
 def _(omega):
-    omega(omega).show_beta().content
-    return
-
-
-@app.cell
-def _(s, zero):
-    s(s(s(zero))).show_beta()
-    return
-
-
-@app.cell
-def _(s, zero):
-    s(zero).reduce()
-    return
-
-
-@app.cell
-def _(omega):
-    omega(omega).show_beta(10)
-    return
-
-
-@app.cell
-def _(omega, zero):
-    x0 = omega(zero)
-    x0.beta()
-    return
-
-
-@app.cell
-def _(omega, zero):
-    omega(zero).show_beta()
-    return
-
-
-@app.cell
-def _(omega, zero):
-    x = omega(zero)
-    out = x.beta()
-    out
+    # faster
+    omega(omega).show_beta(duration=2)
     return
 
 
 @app.cell
 def _():
+    # favorite combinator
     y = (
-        L("f")
-        ._(L("g")._("f").call(V("g").call("g")))
-        .call(L("g")._("f").call(V("g").call("g")))
+        L("f").o(
+            L("g").o("f", o("g", "g")),
+            L("g").o("f", o("g", "g")),
+        )
     ).build()
     y
-    return (y,)
-
-
-@app.cell
-def _(y):
-    succ = L("n", "f", "x")._("f").call(V("n").call("f").call("x")).build()
-    y(succ).beta().beta().beta().beta().beta()
-    return (succ,)
+    return
 
 
 @app.cell
 def _():
+    # factorial function without recursion
     fact = (
-        L("n", "f")
-        ._("n")
-        .call(
-            L("f", "n")
-            ._("n")
-            .call(V("f").call(L("f", "x")._("n").call("f").call(V("f").call("x"))))
+        L("n", "f").o(
+            "n",
+            L("f", "n").o("n", o("f", L("f", "x").o("n", "f", o("f", "x")))),
+            L("x").o("f"),
+            L("x").o("x"),
         )
-        .call(L("x")._("f"))
-        .call(L("x")._("x").build())
     ).build()
     fact
     return (fact,)
 
 
 @app.cell
-def _(fact, three):
-    carousel(fact(three).reduction_chain())
+def _(fact, succ, three):
+    five = succ(succ(three)).reduce()
+    fact(five).reduce()
     return
 
 
 @app.cell
 def _(succ, zero):
-    succ(zero).beta().beta()
-    return
-
-
-@app.cell
-def _(succ, zero):
-    foo = succ(zero).beta().beta()
-    mo.hstack([foo, foo.data.nodes])
-    return (foo,)
-
-
-@app.cell
-def _(foo):
-    mo.hstack([foo.beta(), foo.beta().data.nodes])
-    return
-
-
-@app.cell
-def _(succ, zero):
+    # illustration of the smart layout logic:
     numbers = []
     term = zero
-    for i in range(10):
+    for i in range(30):
         term = succ(term).reduce()
         numbers.append(term.reduce())
-    bar = mo.vstack(numbers)
-    return bar, term
-
-
-@app.cell
-def _(succ, term):
-    term0 = term
-    n0 = []
-    for _ in range(30):
-        term0 = succ(term0)
-        n0.append(term0.reduce())
-    baz = mo.vstack(n0)
-    return (baz,)
-
-
-@app.cell
-def _(bar, baz):
-    mo.hstack([bar, baz])
-    return
-
-
-@app.cell
-def _(fact, succ, zero):
-    fact(succ(succ(succ(succ(succ(zero)))))).reduce()
-    return
-
-
-@app.cell
-def _():
-    pred = L("n", "f", "x")._(
-        V("n")
-        .call(L("g", "h")._("h").call(V("g").call("f")))
-        .call(L("u")._("x"))
-        .call(L("u")._("u"))
-    ).build()
-    return (pred,)
-
-
-@app.cell
-def _(pred, zero):
-    list(pred(zero).reduction_chain())
-    return
-
-
-@app.cell
-def _():
-    l_true = L("a", "b")._("a").build()
-    l_false = L("a", "b")._("b").build()
-    l_not = L("b")._("b").call(l_false).call(l_true).build()
-    return (l_not,)
-
-
-@app.cell
-def _(l_not):
-    L("x")._(l_not).call(V(l_not).call("x")).build().reduce()
-    return
-
-
-@app.cell
-def _(succ):
-    succ.nodes.filter(
-        pl.col("arg").is_not_null(),
-        pl.col("arg").shift().is_null(),
-        pl.col("ref").shift().is_null()
-    ).select("id", "arg")
-    return
-
-
-@app.cell
-def _(succ):
-    succ.nodes.shift(-1)
-    return
-
-
-@app.cell
-def _():
+    mo.hstack(
+        [
+            mo.vstack(numbers[:10]),
+            mo.vstack(numbers[10:]),
+        ]
+    )
     return
 
 
