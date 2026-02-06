@@ -137,6 +137,11 @@ class AbstractTerm:
         else:
             self.nodes = nodes
 
+    def __eq__(self, other: object):
+        if not isinstance(other, AbstractTerm):
+            return False
+        return self.nodes.select("arg", "ref").equals(other.nodes.select("arg", "ref"))
+
     def root(self) -> NodeId:
         return NodeId(0)
 

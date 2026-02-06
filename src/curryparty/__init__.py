@@ -65,6 +65,11 @@ class LambdaTerm:
             yield term
             term = term.beta()
 
+    def __eq__(self, other: object):
+        if not isinstance(other, LambdaTerm):
+            return False
+        return self.data == other.data
+
     def __str__(self) -> str:
         """Convert to string representation using lambda notation."""
         from .term import App, Lam, Var
