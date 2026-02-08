@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.13"
 # dependencies = [
-#     "curryparty==0.4.2",
+#     "curryparty==0.4.3",
 #     "marimo",
 #     "polars==1.38.0",
 # ]
@@ -237,12 +237,10 @@ def _(omega):
 @app.cell
 def _():
     # favorite combinator
-    y = (
-        L("f").o(
-            L("g").o("f", o("g", "g")),
-            L("g").o("f", o("g", "g")),
-        )
-    )#.check()
+    y = L("f").o(
+        L("g").o("f", o("g", "g")),
+        L("g").o("f", o("g", "g")),
+    )  # .check()
     y
     return
 
