@@ -129,17 +129,19 @@ class ShapeAnim:
                     attributeName=name,
                     values=";".join(str(self.values[i, name]) for i in range(n)),
                     dur=timedelta(seconds=self.duration),
-                    begin=begin,
+                    begin=begin,  # type: ignore
                     fill="freeze",
-                    repeatCount="1",
+                    repeatCount=1,
                 )
             )
             elements.append(
                 Animate(
                     attributeName=name,
                     values=f"{non_nulls[0]}",
-                    dur=0,
-                    begin=reset,
+                    dur=timedelta(
+                        seconds=0
+                    ),  # FIXME: duration=0 raises warning in browser
+                    begin=reset,  # type: ignore
                 )
             )
         elements.append(
@@ -147,17 +149,17 @@ class ShapeAnim:
                 attributeName="opacity",
                 values=";".join("1" if v else "0" for v in visible),
                 dur=timedelta(seconds=self.duration),
-                begin=begin,
+                begin=begin,  # type: ignore
                 fill="freeze",
-                repeatCount="1",
+                repeatCount=1,
             )
         )
         elements.append(
             Animate(
                 attributeName="opacity",
                 values="1" if visible[0] else "0",
-                dur=0,
-                begin=reset,
+                dur=timedelta(seconds=0),  # FIXME: duration=0 raises warning in browser
+                begin=reset,  # type: ignore
             )
         )
 
