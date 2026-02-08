@@ -9,7 +9,7 @@
 
 import marimo
 
-__generated_with = "0.19.8"
+__generated_with = "0.19.7"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -20,8 +20,8 @@ with app.setup:
 
 @app.cell(hide_code=True)
 def _():
-    with open("logo.svg") as f:
-        logo = mo.Html(f.read())
+    with open("logo.svg") as file:
+        logo = mo.Html(file.read())
     logo.center()
     return
 
@@ -48,9 +48,8 @@ def _():
 def _():
     # Basic use
     # first, create an expression
-    identity_expression = L("x").o("x")
-    # then, build it
-    identity = identity_expression.build()
+    identity = L("x").o("x")
+
     # you can print the classical representation:
     print(identity)
 
@@ -61,9 +60,23 @@ def _():
 
 @app.cell
 def _():
+    # if there are free variables, you can't do much with it:
+    L("x").o("y")
+    return
+
+
+@app.cell
+def _():
+    # you can check if a term has free variables:
+    L("x").o("y").check()
+    return
+
+
+@app.cell
+def _():
     # church booleans
-    false = L("a", "b").o("a").build()
-    true = L("a", "b").o("b").build()
+    false = L("a", "b").o("a").check()
+    true = L("a", "b").o("b").check()
     return false, true
 
 
@@ -85,13 +98,13 @@ def _(true):
 def _():
     # church numerals
     # a single argument in `o` is a value
-    zero = L("f", "x").o("x").build()
+    zero = L("f", "x").o("x")
     # two arguments is a function call
-    one = L("f", "x").o("f", "x").build()
+    one = L("f", "x").o("f", "x")
     # you can use `o` as a function:
-    two = L("f", "x").o("f", o("f", "x")).build()
+    two = L("f", "x").o("f", o("f", "x"))
     # and so on
-    three = L("f", "x").o("f", o("f", o("f", "x"))).build()
+    three = L("f", "x").o("f", o("f", o("f", "x")))
     return one, three, two, zero
 
 
@@ -105,14 +118,14 @@ def _(one, three, two, zero):
 @app.cell
 def _():
     # successor function
-    succ = L("n", "f", "x").o("f", o("n", "f", "x")).build()
+    succ = L("n", "f", "x").o("f", o("n", "f", "x")).check()
     succ
     return (succ,)
 
 
 @app.cell
 def _(false, true):
-    not_ = L("b").o("b", true, false).build()
+    not_ = L("b").o("b", true, false).check()
     return (not_,)
 
 
@@ -202,7 +215,7 @@ def _(succ, zero):
 
 @app.cell
 def _():
-    omega = L("x").o("x", "x").build()
+    omega = L("x").o("x", "x").check()
     print(omega)
     omega
     return (omega,)
@@ -229,7 +242,7 @@ def _():
             L("g").o("f", o("g", "g")),
             L("g").o("f", o("g", "g")),
         )
-    ).build()
+    )#.check()
     y
     return
 
@@ -244,14 +257,14 @@ def _():
             L("x").o("f"),
             L("x").o("x"),
         )
-    ).build()
+    ).check()
     fact
     return (fact,)
 
 
 @app.cell
 def _(fact, succ, three):
-    five = succ(succ(three)).reduce()
+    five = succ(succ(three)).check().reduce()
     fact(five).reduce()
     return
 

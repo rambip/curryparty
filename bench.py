@@ -1,15 +1,15 @@
 import cProfile
 import pstats
 
-from curryparty import L, V
+from curryparty import L, o
 
 
 def main():
-    succ = L("n", "f", "x")._("f").call(V("n").call("f").call("x")).build()
-    zero = L("f", "x")._("x").build()
+    succ = L("n", "f", "x").o("f", o("n", "f", "x")).check()
+    zero = L("f", "x").o("x").check()
 
     term = zero
-    for i in range(30):
+    for i in range(10):
         term = succ(term)
         term.reduce()
 
