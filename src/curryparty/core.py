@@ -344,14 +344,19 @@ class AbstractTerm:
             # Cycle detection
             term_id = id(t)
             if term_id in visited:
-                raise ValueError(f"Cycle detected: term contains itself as a subterm")
+                raise ValueError("Cycle detected: term contains itself as a subterm")
             visited.add(term_id)
 
             node_id = len(rows)
 
             if isinstance(t, Var):
                 # Variable: ref points to the lambda it's bound to
-                ref = lambdas[-(t.index + 1)] if t.index < len(lambdas) else None
+                if isinstance(t.name, str):
+                    raise ValueError(
+                        f"Cannot convert term with free variable '{t.name}' to AbstractTerm. "
+                        "Free variables are not supported in evaluation."
+                    )
+                ref = lambdas[-(t.name + 1)] if t.name < len(lambdas) else None
                 rows.append({"id": node_id, "ref": ref, "arg": None, "prev": None})
             elif isinstance(t, Lam):
                 # Lambda: ref=None, arg=None, child is implicitly at node_id+1
