@@ -6,7 +6,9 @@ This library is intended to be used in an interactive
 from typing import Iterable, Optional, Union
 
 try:
-    import polars as pl
+    from importlib.util import find_spec
+
+    find_spec("polars")
 except ImportError:
     raise ImportError(
         "curryparty needs the `polars` library. \n Please install it, typically with `pip install polars`"
@@ -24,7 +26,7 @@ from .display import (
     compute_svg_frame_phase_b,
     count_variables,
 )
-from .term import Term, app, lam, var
+from .term import App, Lam, Term, Var
 from .utils import ShapeAnim, ShapeAnimFrame
 
 __all__ = ["L", "o"]
@@ -39,13 +41,65 @@ def log2(n):
 
 
 class LambdaTerm:
-    def __init__(self, data: AbstractTerm):
-        self.data = data
+    def __init__(self, data: Union[Term, AbstractTerm]):
+        """
+        The main exported class of the library.
+
+        It is not meant to be used directly. To build a term, use the `L` class or the `o` function instead.
+
+        a `LambdaTerm` can be either:
+            - complete when there is no free variable left in it
+            - uncomplete when there are still free variable in it
+
+        To assert that a lambda term is complete, use `term.check()`
+        """
+        if isinstance(data, AbstractTerm):
+            self.data = data
+            return
+        if data.is_fully_bound():
+            self.data = AbstractTerm.from_term(data)
+        else:
+            self.data: Union[Term, AbstractTerm] = data
+
+    def as_term(self) -> "Term":
+        """
+        Converts to the shared term representation.
+        """
+        if isinstance(self.data, Term):
+            return self.data
+        return self.data.to_term()
+
+    def build(self) -> "LambdaTerm":
+        print(
+            "Warning: `build` is deprecated. You don't need to build terms anymore.\n"
+            "To check if there is no free variable in your term, use `check` instead"
+        )
+        assert isinstance(self.data, AbstractTerm), (
+            f"Lambda term has free variables: {list(self.data.free_vars())}"
+        )
+        return self
+
+    def check(self) -> "LambdaTerm":
+        """
+        Checks that there is no freevar in the expression, and return itself
+        """
+        assert isinstance(self.data, AbstractTerm), (
+            f"Lambda term has free variables: {list(self.data.free_vars())}"
+        )
+        return self
 
     def __call__(self, other: "LambdaTerm") -> "LambdaTerm":
-        return LambdaTerm((self.data)(other.data))
+        return LambdaTerm((self.as_term()(other.as_term())))
 
     def beta(self) -> Optional["LambdaTerm"]:
+        """
+        Operate a lambda-reduction, one single evaluation step.
+        If you want to get the final form, use `reduce`.
+        If you want to get all intermediate step before the final form, use `reduction_chain`.
+        """
+        assert isinstance(self.data, AbstractTerm), (
+            "Lambda term has free variables, it cannot be reduced"
+        )
         candidates = self.data.find_redexes()
         redex = next(candidates, None)
         if redex is None:
@@ -54,35 +108,56 @@ class LambdaTerm:
         return LambdaTerm(reduced)
 
     def reduce(self):
+        """
+        Reduce the term to its final form.
+        Note that this function is not guaranteed to terminate, for example:
+        ```py
+        omega = L("x").o("x", "x")
+        omega(omega).reduce()
+        ```
+
+        will hang forever.
+
+        If you want to get all the intermediate reduction steps, use `reduction_chain`
+        """
         last_non_reduced = self
         for term in self.reduction_chain():
             last_non_reduced = term
         return last_non_reduced
 
     def reduction_chain(self) -> Iterable["LambdaTerm"]:
+        """
+        Yield every intermediate step in the reduction of the term to a final form.
+        """
         term = self
         while term is not None:
             yield term
             term = term.beta()
 
     def __eq__(self, other: object):
+        """
+        Check if 2 lambda-terms are equal, up to renaming the variables
+        """
+        self.check()
         if not isinstance(other, LambdaTerm):
             return False
         return self.data == other.data
 
     def __str__(self) -> str:
         """Convert to string representation using lambda notation."""
-        from .term import App, Lam, Var
-
         lambda_counter = [0]  # Global counter for lambda indices
 
         def pretty(t, lambda_stack=[], paren=False):
             if isinstance(t, Var):
                 # Get the lambda index this variable refers to
-                if t.index < len(lambda_stack):
-                    lam_idx = lambda_stack[-(t.index + 1)]
-                    return f"x{lam_idx}"
-                return f"x{t.index}"
+                if t.is_bound:
+                    if t.index < len(lambda_stack):
+                        lam_idx = lambda_stack[-(t.index + 1)]
+                        return f"x{lam_idx}"
+                    return f"x{t.index}"
+                else:
+                    # Free variable - use its name
+                    return str(t.name)
             elif isinstance(t, Lam):
                 idx = lambda_counter[0]
                 lambda_counter[0] += 1
@@ -94,13 +169,18 @@ class LambdaTerm:
                 return f"{func}({arg})"
             return str(t)
 
-        return pretty(self.data.to_term())
+        return pretty(self.as_term())
 
     def show_beta(self, duration=7):
         """
-        Generates an HTML representation that toggles visibility between
-        a static state and a SMIL animation on hover using pure CSS.
+        Show one reduction step as an SVG animation.
+        Returns None if the term can't be reduced.
+
+        Tip: use `term.show_beta() or term` to fallback to the static figure if the term can't be reduced.
         """
+        assert isinstance(self.data, AbstractTerm), (
+            "Lambda term has free variables, it cannot be reduced"
+        )
 
         candidates = self.data.find_redexes()
         redex = next(candidates, None)
@@ -115,8 +195,6 @@ class LambdaTerm:
         vars = list(self.data.find_variables(lamb))
         b_subtree = list(self.data.get_subtree(b))
         height = min(compute_height(self.data), compute_height(new_nodes)) * 2
-        if count_variables(self.data) == 0:
-            return "no width"
         raw_width = max(count_variables(self.data), count_variables(new_nodes))
         width = 1 << (1 + log2(raw_width))
         frame_data: list[ShapeAnimFrame] = []
@@ -175,6 +253,18 @@ class LambdaTerm:
         )
 
     def _repr_html_(self):
+        """
+        Display the term as a static svg.
+        """
+        if not isinstance(self.data, AbstractTerm):
+            mention = ""
+            free_vars = list(set(self.data.free_vars()))
+            if not self.data.is_valid(0):
+                mention = " [invalid]"
+            elif free_vars:
+                mention = f" [free: {', '.join(free_vars)}]"
+            return self.data.__repr__() + mention
+
         frame = sorted(compute_svg_frame_init(self.data), key=lambda x: x.zindex)
 
         width = (1 << (1 + log2(count_variables(self.data)))) + 4
@@ -194,226 +284,72 @@ class LambdaTerm:
         ).as_str()
 
 
-# Type alias for clarity
-BuilderArg = Union[str, "L", "Application", Term, LambdaTerm]
+# type of the argument used to create lambda-terms
+BuilderArg = Union[str, "Term", "LambdaTerm"]
 
 
-class Application:
+def o(*args: BuilderArg) -> Term:
     """
-    Represents a pending application that will be resolved in context.
+    Combine multiple terms with function application.
 
-    This is returned by o() when used standalone, and allows writing:
-        L("f").o("x", o("y", "z"))
-    where o("y", "z") creates an Application that gets resolved in f's context.
-    """
-
-    def __init__(self, *args: BuilderArg):
-        self.args = args
-
-
-def o(*args: BuilderArg) -> Application:
-    """
-    Create an application expression.
-
-    This is meant to be used inside L(...).o(...) contexts:
-        L("f", "x").o("f", o("f", "x"))  # λf. λx. f (f x)
-
-    The o("f", "x") creates an Application that will be resolved
-    in the context of the enclosing lambda.
-
-    Args:
-        *args: Variable names, lambda builders, nested applications, or Terms
-
-    Returns:
-        An Application object that will be resolved in context
+    Note that the arguments are combined in a left-associative way, in the same way as in Lisp, Ocaml or Haskell.
+    For example, `o(f, g, h)` would be written `f(g)(h)` in python, or `Apply(Apply(f, g), h)`
     """
     if len(args) == 0:
         raise ValueError("o() requires at least one argument")
 
-    return Application(*args)
+    result = _to_term(args[0])
+    for f in args[1:]:
+        result = App(result, _to_term(f))
+
+    return result
 
 
 class L:
-    """
-    Builder for lambda calculus terms with deferred evaluation.
-
-    The key insight: We don't resolve variable names to De Bruijn indices
-    until build() is called. This allows nested lambdas to reference outer
-    variables correctly.
-
-    Supports:
-    - Multiple lambda bindings: L("x", "y", "z")
-    - Variable references: L("x").o("x")
-    - Applications: L("f").o("x", "y") applies f to x, then to y
-    - Nested applications: L("f").o("x", o("y", "z"))
-    - Nested lambdas: L("x").o(L("y").o("x"))
-    - Shorthand for body: L("x")._("x") same as L("x").o("x")
-    """
-
-    def __init__(self, *names: str):
-        """
-        Create a lambda builder with bound variable names.
-
-        Args:
-            *names: Variable names to bind (creates nested lambdas)
-                   L("x", "y") creates λx. λy. ...
-        """
+    def __init__(self, *names: Union[str, Var]):
         self.names = list(names)
-        # Store the body as raw BuilderArgs, not resolved Terms
-        self.body_args: list[BuilderArg] = []
 
-    def o(self, *args: BuilderArg) -> "L":
+    def o(self, *args: BuilderArg) -> LambdaTerm:
         """
-        Set the body or apply arguments.
+        Provide the body of the lambda-expression.
 
-        This method handles:
-        1. Setting the lambda body: L("x").o("x")
-        2. Function application: L("f").o("x", "y") means f(x)(y)
-        3. Nested applications: L("f").o("x", o("y", "z"))
+        You can provide either a single term, or multiple terms that will be compined with function application.
 
-        Args:
-            *args: Variable names (strings), lambda builders (L),
-                  applications (Application from o()), or Terms
-
-        Returns:
-            Self for chaining
+        Note that the arguments are combined in a left-associative way, in the same way as in Lisp, Ocaml or Haskell.
+        For example, `L(x).o(f, g, h)` would be written `lambda x: f(g)(h)` in python, or `Apply(Apply(f, g), h)`
         """
-        if len(args) == 0:
-            raise ValueError("o() requires at least one argument")
+        # Convert body to term with given context
+        term = _to_term(o(*args))
 
-        # Store the arguments without resolving them yet
-        self.body_args.extend(args)
-        return self
+        # Wrap in lambdas for each name
+        for v in reversed(self.names):
+            name = v if isinstance(v, str) else v.name
+            assert isinstance(name, str)
+            term = Lam.from_unbound_term(term, name)
 
-    def _to_term(self, arg: BuilderArg, context: list[str]) -> Term:
-        """
-        Convert an argument to a Term in the given context.
+        return LambdaTerm(term)
 
-        Args:
-            arg: Variable name, lambda builder, application, or Term
-            context: Stack of variable names (innermost last)
 
-        Returns:
-            A Term object
-        """
-        if isinstance(arg, str):
-            # Variable reference - find its De Bruijn index
-            return self._var_to_term(arg, context)
-        elif isinstance(arg, L):
-            # Nested lambda - build it with extended context
-            return arg._build_with_context(context)
-        elif isinstance(arg, Application):
-            # Nested application - resolve in current context
-            return self._application_to_term(arg, context)
-        elif isinstance(arg, Term):
-            return arg
-        elif isinstance(arg, LambdaTerm):
-            return arg.data.to_term()
-        else:
-            raise ValueError(f"unknown type for lambda builder: {type(arg)}")
+def _to_term(arg: BuilderArg) -> Term:
+    """
+    Convert a BuilderArg to a Term in the given context.
 
-    def _application_to_term(self, appl: Application, context: list[str]) -> Term:
-        """
-        Convert an Application to a Term in the given context.
+    Args:
+        arg: Variable name, Application, Term, or LambdaTerm
+        context: Stack of bound variable names (innermost last)
 
-        Args:
-            appl: Application object from o()
-            context: Stack of variable names
-
-        Returns:
-            A Term representing the application
-        """
-        result: Term | None = None
-        for arg in appl.args:
-            term = self._to_term(arg, context)
-            if result is None:
-                result = term
-            else:
-                result = app(result, term)
-
-        if result is None:
-            raise ValueError("Application produced no result")
-
-        return result
-
-    def _var_to_term(self, name: str, context: list[str]) -> Term:
-        """
-        Convert a variable name to a Var term with De Bruijn index.
-
-        Searches from innermost to outermost lambda to find the binding.
-
-        Args:
-            name: Variable name to look up
-            context: Stack of variable names (innermost last)
-
-        Returns:
-            Var term with appropriate De Bruijn index
-        """
-        # Search from the end (innermost lambda) backwards
-        for i in range(len(context) - 1, -1, -1):
-            if context[i] == name:
-                # Found it! Calculate De Bruijn index
-                # Distance from end of list
-                index = len(context) - 1 - i
-                return var(index)
-
-        # Not found in current scope
-        raise ValueError(
-            f"Variable '{name}' not bound in current lambda scope: {context}"
-        )
-
-    def _build_with_context(self, outer_context: list[str]) -> Term:
-        """
-        Build this lambda term with outer variable context.
-
-        This is the KEY method that fixes the scoping issue.
-        We pass down the outer context so nested lambdas can reference
-        outer variables.
-
-        Args:
-            outer_context: Variable names from outer lambdas
-
-        Returns:
-            Complete Term with correct De Bruijn indices
-        """
-        # Create extended context: outer + our names
-        full_context = outer_context + self.names
-
-        # Build body with full context
-        if len(self.body_args) == 0:
-            raise ValueError(
-                "Cannot build lambda without a body. Use .o(...) to set the body."
-            )
-
-        # Convert body args to terms
-        result: Term | None = None
-        for arg in self.body_args:
-            term = self._to_term(arg, full_context)
-            if result is None:
-                result = term
-            else:
-                result = app(result, term)
-
-        if result is None:
-            raise ValueError("Body produced no result")
-
-        # Wrap in lambdas for our names
-        for _ in self.names:
-            result = lam(result)
-
-        return result
-
-    def build(self) -> LambdaTerm:
-        """
-        Build the actual Term from this builder.
-
-        This is when variable resolution happens!
-
-        Returns:
-            The complete lambda term wrapped in LambdaTerm
-        """
-        result = self._build_with_context([])
-        return LambdaTerm(AbstractTerm.from_term(result))
+    Returns:
+        A Term object (may contain free variables)
+    """
+    if isinstance(arg, str):
+        # Variable reference - find its De Bruijn index or keep as free variable
+        return Var(arg)
+    elif issubclass(arg.__class__, Term):
+        return arg  # type: ignore
+    elif isinstance(arg, LambdaTerm):
+        return arg.as_term()
+    else:
+        raise ValueError(f"Unknown type for lambda builder: {type(arg)}")
 
 
 class Html:
