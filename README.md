@@ -19,24 +19,24 @@ from curryparty import L, o
 # Build classic lambda calculus expressions
 
 # Identity: λx. x
-identity = L("x").o("x").build()
+identity = L("x").o("x")
 
 # Const (K combinator): λx. λy. x
-const = L("x", "y").o("x").build()
+const = L("x", "y").o("x")
 
 # Omega: λx. x x
-omega = L("x").o("x", "x").build()
+omega = L("x").o("x", "x")
 print(omega(omega))  # (λ0 x0(x0))((λ1 x1(x1)))
 
 # Church numerals
-zero = L("f", "x").o("x").build()
-one = L("f", "x").o("f", "x").build()
-two = L("f", "x").o("f", o("f", "x")).build()
+zero = L("f", "x").o("x")
+one = L("f", "x").o("f", "x")
+two = L("f", "x").o("f", o("f", "x"))
 
-succ = L("n", "f", "x").o("f", o("n", "f", "x")).build()
+succ = L("n", "f", "x").o("f", o("n", "f", "x"))
 
 # S combinator: λf. λg. λx. f x (g x)
-s_comb = L("f", "g", "x").o("f", "x", o("g", "x")).build()
+s_comb = L("f", "g", "x").o("f", "x", o("g", "x"))
 
 # Beta reduction
 # Nothing happens until you reduce:
