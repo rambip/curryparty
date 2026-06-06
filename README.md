@@ -71,9 +71,13 @@ You can also use `term.show_reduction` to get an animated version.
 
 # Tutorial
 
-`lambda.py` shows a tutorial in marimo format. Click on the button to try it out:
+`./lambda.py` shows a basic tutorial in marimo format. Click on the button to try it out:
 
 [![Open with marimo](https://marimo.io/shield.svg)](https://marimo.app/github.com/rambip/curryparty/blob/main/lambda.py)
+
+If you want to dig deeper, I wrote an explainer that goes from zero to advanced concepts in lambda calculus:
+
+[Curryparty explainer: A pinch of Lambda Calculus](https://rambip.github.io/lambda_calc.py.html)
 
 # How it works
 
